@@ -1,4 +1,4 @@
-FROM agentbox-base
+FROM construct-base
 
 USER root
 

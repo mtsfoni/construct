@@ -16,7 +16,7 @@ var validStacks = []string{"base", "node", "dotnet", "python"}
 
 // ImageName returns the Docker image name for a given stack.
 func ImageName(stack string) string {
-	return "agentbox-" + stack
+	return "construct-" + stack
 }
 
 // IsValid reports whether the given stack name is supported.
@@ -58,7 +58,7 @@ func EnsureBuilt(stack string, rebuild bool) error {
 // build writes the embedded Dockerfile for stack to a temp directory and runs
 // docker build, tagging the result as imageName.
 func build(stack, imageName string) error {
-	dir, err := os.MkdirTemp("", "agentbox-build-*")
+	dir, err := os.MkdirTemp("", "construct-build-*")
 	if err != nil {
 		return err
 	}

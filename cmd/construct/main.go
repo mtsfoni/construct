@@ -18,11 +18,11 @@ func main() {
 	rebuild := flag.Bool("rebuild", false, "Force rebuild of the stack and tool images")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: agentbox --tool <tool> [--stack <stack>] [--rebuild] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  agentbox --tool opencode --stack dotnet /path/to/repo\n")
-		fmt.Fprintf(os.Stderr, "  agentbox --tool copilot --stack node .\n")
-		fmt.Fprintf(os.Stderr, "  agentbox --tool opencode --stack python ~/projects/myapp\n\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack dotnet /path/to/repo\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack node .\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack python ~/projects/myapp\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}

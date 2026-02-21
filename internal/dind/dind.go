@@ -18,12 +18,12 @@ type Instance struct {
 
 // ContainerName returns the deterministic name for the dind container.
 func containerName(sessionID string) string {
-	return "agentbox-dind-" + sessionID
+	return "construct-dind-" + sessionID
 }
 
 // networkName returns the deterministic name for the shared Docker network.
 func networkName(sessionID string) string {
-	return "agentbox-net-" + sessionID
+	return "construct-net-" + sessionID
 }
 
 // DockerHost returns the DOCKER_HOST value the agent container should use to
@@ -76,13 +76,13 @@ func Start(sessionID string) (*Instance, error) {
 // stderr but not returned so that deferred calls always complete.
 func (i *Instance) Stop() {
 	if out, err := run("docker", "stop", i.ContainerName); err != nil {
-		fmt.Fprintf(os.Stderr, "agentbox: stop dind: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "construct: stop dind: %v\n%s\n", err, out)
 	}
 	if out, err := run("docker", "rm", i.ContainerName); err != nil {
-		fmt.Fprintf(os.Stderr, "agentbox: rm dind: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "construct: rm dind: %v\n%s\n", err, out)
 	}
 	if out, err := run("docker", "network", "rm", i.NetworkName); err != nil {
-		fmt.Fprintf(os.Stderr, "agentbox: rm network: %v\n%s\n", err, out)
+		fmt.Fprintf(os.Stderr, "construct: rm network: %v\n%s\n", err, out)
 	}
 }
 

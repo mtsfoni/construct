@@ -1,4 +1,4 @@
-# agentbox
+# construct
 
 Run AI coding agents in yolo/auto-approve mode without giving them access to your actual machine. Not a perfect sandbox, but meaningfully better than running directly on your host. The agent gets its own isolated Docker daemon so it can build, test, and run containers freely without touching yours.
 
@@ -16,7 +16,7 @@ This means the agent:
 ## Installation
 
 ```bash
-go install github.com/mtsfoni/construct/cmd/agentbox@latest
+go install github.com/mtsfoni/construct/cmd/construct@latest
 ```
 
 Or clone and build locally:
@@ -24,21 +24,21 @@ Or clone and build locally:
 ```bash
 git clone https://github.com/mtsfoni/construct
 cd construct
-go build -o agentbox ./cmd/agentbox
+go build -o construct ./cmd/construct
 ```
 
 ## Usage
 
 ```
-agentbox --tool <tool> [--stack <stack>] [--rebuild] [path]
+construct --tool <tool> [--stack <stack>] [--rebuild] [path]
 ```
 
 `path` defaults to the current working directory.
 
 ```bash
-agentbox --tool opencode --stack dotnet /path/to/repo
-agentbox --tool copilot --stack node .
-agentbox --tool opencode --stack python ~/projects/myapp
+construct --tool opencode --stack dotnet /path/to/repo
+construct --tool copilot --stack node .
+construct --tool opencode --stack python ~/projects/myapp
 ```
 
 ### Flags
@@ -67,7 +67,7 @@ agentbox --tool opencode --stack python ~/projects/myapp
 
 ## Auth / config
 
-Create `~/.agentbox/.env` with your API keys:
+Create `~/.construct/.env` with your API keys:
 
 ```env
 # For copilot
@@ -78,18 +78,18 @@ ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 ```
 
-A `.agentbox/.env` file in the repo root overrides the global config.
+A `.construct/.env` file in the repo root overrides the global config.
 
 ## Agent instructions
 
 - `.github/copilot-instructions.md` in the repo — mounted automatically for both tools
-- `.agentbox/instructions.md` in the repo — mounted as the tool's instruction file
+- `.construct/instructions.md` in the repo — mounted as the tool's instruction file
 
 ## Project structure
 
 ```
-agentbox/
-  cmd/agentbox/main.go              # entrypoint, flag parsing
+construct/
+  cmd/construct/main.go               # entrypoint, flag parsing
   internal/
     tools/                          # tool definitions (copilot, opencode)
     stacks/                         # stack images + embedded Dockerfiles

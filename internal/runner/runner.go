@@ -17,7 +17,7 @@ import (
 	"github.com/mtsfoni/construct/internal/tools"
 )
 
-// Config holds all options needed to start an agentbox session.
+// Config holds all options needed to start a construct session.
 type Config struct {
 	Tool     *tools.Tool
 	Stack    string
@@ -48,7 +48,7 @@ func Run(cfg *Config) error {
 	}
 
 	// 4. Start the dind sidecar.
-	fmt.Printf("agentbox: starting dind sidecar (session %s)…\n", sessionID)
+	fmt.Printf("construct: starting dind sidecar (session %s)…\n", sessionID)
 	dindInst, err := dind.Start(sessionID)
 	if err != nil {
 		return fmt.Errorf("start dind: %w", err)
@@ -61,7 +61,7 @@ func Run(cfg *Config) error {
 		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 		select {
 		case <-sigs:
-			fmt.Println("\nagentbox: interrupted — cleaning up…")
+			fmt.Println("\nconstruct: interrupted — cleaning up…")
 			dindInst.Stop()
 			os.Exit(1)
 		case <-stopped:
@@ -82,7 +82,7 @@ func Run(cfg *Config) error {
 	args := buildRunArgs(cfg, dindInst, toolImage, sessionID, env)
 
 	// 7. Run the agent container interactively.
-	fmt.Printf("agentbox: launching %s in %s container…\n", cfg.Tool.Name, cfg.Stack)
+	fmt.Printf("construct: launching %s in %s container…\n", cfg.Tool.Name, cfg.Stack)
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -94,7 +94,7 @@ func Run(cfg *Config) error {
 func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID string, env map[string]string) []string {
 	args := []string{
 		"run", "--rm", "-it",
-		"--name", "agentbox-agent-" + sessionID,
+		"--name", "construct-agent-" + sessionID,
 		"--network", d.NetworkName,
 		"-e", "DOCKER_HOST=" + d.DockerHost(),
 		"-v", cfg.RepoPath + ":/workspace",
@@ -130,13 +130,13 @@ func instructionMounts(repoPath, toolName string) []string {
 		mounts = append(mounts, "-v", copilotInstructions+":/workspace/.github/copilot-instructions.md:ro")
 	}
 
-	agentboxInstructions := filepath.Join(repoPath, ".agentbox", "instructions.md")
-	if _, err := os.Stat(agentboxInstructions); err == nil {
+	constructInstructions := filepath.Join(repoPath, ".construct", "instructions.md")
+	if _, err := os.Stat(constructInstructions); err == nil {
 		switch toolName {
 		case "copilot":
-			mounts = append(mounts, "-v", agentboxInstructions+":/workspace/.github/copilot-instructions.md:ro")
+			mounts = append(mounts, "-v", constructInstructions+":/workspace/.github/copilot-instructions.md:ro")
 		case "opencode":
-			mounts = append(mounts, "-v", agentboxInstructions+":/workspace/.opencode/instructions.md:ro")
+			mounts = append(mounts, "-v", constructInstructions+":/workspace/.opencode/instructions.md:ro")
 		}
 	}
 
@@ -145,7 +145,7 @@ func instructionMounts(repoPath, toolName string) []string {
 
 // buildToolImage creates a derived Docker image that installs the tool on top of the stack image.
 func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
-	dir, err := os.MkdirTemp("", "agentbox-tool-build-*")
+	dir, err := os.MkdirTemp("", "construct-tool-build-*")
 	if err != nil {
 		return err
 	}
@@ -176,7 +176,7 @@ func toolImageExists(name string) bool {
 	return err == nil && len(out) > 0
 }
 
-// loadEnv reads ~/.agentbox/.env then .agentbox/.env in the repo root,
+// loadEnv reads ~/.construct/.env then .construct/.env in the repo root,
 // with the per-repo file taking precedence over the global one.
 func loadEnv(repoPath string) (map[string]string, error) {
 	home, err := os.UserHomeDir()
@@ -187,13 +187,13 @@ func loadEnv(repoPath string) (map[string]string, error) {
 	env := make(map[string]string)
 
 	// Global env file.
-	globalEnvFile := filepath.Join(home, ".agentbox", ".env")
+	globalEnvFile := filepath.Join(home, ".construct", ".env")
 	if err := mergeEnvFile(env, globalEnvFile); err != nil {
 		return nil, err
 	}
 
 	// Per-repo env file overrides global.
-	repoEnvFile := filepath.Join(repoPath, ".agentbox", ".env")
+	repoEnvFile := filepath.Join(repoPath, ".construct", ".env")
 	if err := mergeEnvFile(env, repoEnvFile); err != nil {
 		return nil, err
 	}
