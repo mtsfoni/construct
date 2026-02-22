@@ -75,10 +75,7 @@ func Start(sessionID string) (*Instance, error) {
 // Stop removes the dind container and the shared network. Errors are printed to
 // stderr but not returned so that deferred calls always complete.
 func (i *Instance) Stop() {
-	if out, err := run("docker", "stop", i.ContainerName); err != nil {
-		fmt.Fprintf(os.Stderr, "construct: stop dind: %v\n%s\n", err, out)
-	}
-	if out, err := run("docker", "rm", i.ContainerName); err != nil {
+	if out, err := run("docker", "rm", "-f", i.ContainerName); err != nil {
 		fmt.Fprintf(os.Stderr, "construct: rm dind: %v\n%s\n", err, out)
 	}
 	if out, err := run("docker", "network", "rm", i.NetworkName); err != nil {
@@ -103,7 +100,11 @@ func (i *Instance) waitReady() error {
 }
 
 // run executes a command and returns its combined output and any error.
+// It runs in its own process group so that SIGINT from Ctrl+C is not
+// forwarded to the subprocess.
 func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	setSysProcAttr(cmd)
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
