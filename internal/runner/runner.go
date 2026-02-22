@@ -56,14 +56,32 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("ensure home volume: %w", err)
 	}
 
-	// 5. Start the dind sidecar.
+	// 5. Load environment variables (global then per-repo override).
+	env, err := loadEnv(cfg.RepoPath)
+	if err != nil {
+		return fmt.Errorf("load env: %w", err)
+	}
+
+	// 6. Write per-credential secret files.
+	// Done before starting dind so the path is available to the signal handler,
+	// which must clean it up explicitly — os.Exit does not run deferred calls.
+	secretsDir, err := writeSecretFiles(cfg.Tool.AuthEnvVars, env)
+	if err != nil {
+		return fmt.Errorf("write secret files: %w", err)
+	}
+	defer os.RemoveAll(secretsDir)
+
+	// 7. Start the dind sidecar.
 	fmt.Printf("construct: starting dind sidecar (session %s)…\n", sessionID)
 	dindInst, err := dind.Start(sessionID)
 	if err != nil {
+		os.RemoveAll(secretsDir)
 		return fmt.Errorf("start dind: %w", err)
 	}
 
 	// Always clean up on exit — even on SIGINT/SIGTERM.
+	// os.Exit does not run deferred functions, so the signal handler must
+	// explicitly remove the secrets directory before calling os.Exit.
 	stopped := make(chan struct{})
 	go func() {
 		sigs := make(chan os.Signal, 1)
@@ -71,6 +89,7 @@ func Run(cfg *Config) error {
 		select {
 		case <-sigs:
 			fmt.Println("\nconstruct: interrupted — cleaning up…")
+			os.RemoveAll(secretsDir)
 			dindInst.Stop()
 			os.Exit(1)
 		case <-stopped:
@@ -81,23 +100,11 @@ func Run(cfg *Config) error {
 		dindInst.Stop()
 	}()
 
-	// 6. Load environment variables (global then per-repo override).
-	env, err := loadEnv(cfg.RepoPath)
-	if err != nil {
-		return fmt.Errorf("load env: %w", err)
-	}
-
-	// 7. Write per-credential secret files (cleaned up after the container exits).
-	secretsDir, err := writeSecretFiles(cfg.Tool.AuthEnvVars, env)
-	if err != nil {
-		return fmt.Errorf("write secret files: %w", err)
-	}
-	defer os.RemoveAll(secretsDir)
-
 	// 8. Build the docker run argument list.
 	args := buildRunArgs(cfg, dindInst, toolImage, sessionID, homVol, secretsDir)
 
 	// 9. Run the agent container interactively.
+
 	if cfg.Debug {
 		fmt.Printf("construct: debug mode — starting shell in %s container (no agent)…\n", cfg.Stack)
 	} else {
