@@ -118,6 +118,40 @@ func TestWriteSecretFiles_SkipsMissingEnvKey(t *testing.T) {
 	}
 }
 
+// TestEnsureHomeVolume_SetsLabel is an integration test that verifies the home
+// volume is created with the io.construct.managed=true label so that
+// `docker volume prune` (which skips labelled volumes by default) does not
+// remove it and wipe persisted tool auth state (e.g. gh auth login tokens).
+func TestEnsureHomeVolume_SetsLabel(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("docker daemon not accessible")
+	}
+
+	volumeName := "construct-test-label-" + t.Name()
+	// Ensure the volume does not already exist from a previous run.
+	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
+
+	if err := ensureHomeVolume(volumeName, "", nil); err != nil {
+		t.Fatalf("ensureHomeVolume: %v", err)
+	}
+
+	out, err := exec.Command("docker", "volume", "inspect",
+		"--format", "{{index .Labels \"io.construct.managed\"}}",
+		volumeName,
+	).Output()
+	if err != nil {
+		t.Fatalf("inspect volume: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "true" {
+		t.Errorf("label io.construct.managed = %q, want %q", got, "true")
+	}
+}
+
 // TestEntrypointScript_ExportsSecrets is an integration test that verifies the
 // entrypoint wrapper exports /run/secrets/* as environment variables.
 // It is skipped when Docker is unavailable or bind mounts from the current

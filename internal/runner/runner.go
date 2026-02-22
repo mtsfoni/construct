@@ -315,8 +315,11 @@ func ensureHomeVolume(volumeName, image string, seedFiles map[string]string) err
 		return nil // already initialised
 	}
 
-	// Create the volume.
-	if out, err := exec.Command("docker", "volume", "create", volumeName).CombinedOutput(); err != nil {
+	// Create the volume with a label so `docker volume prune` does not remove it.
+	if out, err := exec.Command("docker", "volume", "create",
+		"--label", "io.construct.managed=true",
+		volumeName,
+	).CombinedOutput(); err != nil {
 		return fmt.Errorf("create volume %s: %w\n%s", volumeName, err, string(out))
 	}
 
