@@ -19,6 +19,15 @@ This means the agent:
 
 ## Installation
 
+Download the pre-built binary (Linux x86-64):
+
+```bash
+curl -L https://github.com/mtsfoni/construct/releases/latest/download/construct-linux-amd64 -o ~/.local/bin/construct
+chmod +x ~/.local/bin/construct
+```
+
+Or install via Go:
+
 ```bash
 go install github.com/mtsfoni/construct/cmd/construct@latest
 ```
