@@ -127,20 +127,28 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, s
 		"run", "--rm", "-it",
 		"--name", "construct-agent-" + sessionID,
 		"--network", d.NetworkName,
-		"--user", fmt.Sprintf("%d:%d", uid, gid),
+	}
+
+	// On Windows, os.Getuid/os.Getgid return -1. Skip --user; Docker Desktop
+	// runs containers through a Linux VM so host UID/GID mapping is not applicable.
+	if uid >= 0 && gid >= 0 {
+		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
+	}
+
+	args = append(args,
 		// Persistent named volume for the agent home dir — isolated from the host
 		// filesystem but preserved across sessions for history/config/caches.
-		"-v", homeVolume + ":/home/agent",
+		"-v", homeVolume+":/home/agent",
 		"-e", "HOME=/home/agent",
 		// Git identity — avoids "please tell me who you are" errors inside the container.
 		"-e", "GIT_AUTHOR_NAME=construct agent",
 		"-e", "GIT_AUTHOR_EMAIL=agent@construct.local",
 		"-e", "GIT_COMMITTER_NAME=construct agent",
 		"-e", "GIT_COMMITTER_EMAIL=agent@construct.local",
-		"-e", "DOCKER_HOST=" + d.DockerHost(),
-		"-v", cfg.RepoPath + ":/workspace:z",
+		"-e", "DOCKER_HOST="+d.DockerHost(),
+		"-v", cfg.RepoPath+":/workspace:z",
 		"-w", "/workspace",
-	}
+	)
 
 	// Mount the secrets directory read-only at /run/secrets; the entrypoint
 	// wrapper will export each file as an environment variable. This keeps
@@ -343,10 +351,17 @@ func ensureHomeVolume(volumeName, image string, seedFiles map[string]string) err
 	// Initialise ownership and copy seed files using a single container.
 	uid := os.Getuid()
 	gid := os.Getgid()
-	shellCmd := fmt.Sprintf(
-		"chown %d:%d /home/agent && cp -r /seed/. /home/agent/ && chown -R %d:%d /home/agent",
-		uid, gid, uid, gid,
-	)
+	var shellCmd string
+	if uid >= 0 && gid >= 0 {
+		shellCmd = fmt.Sprintf(
+			"chown %d:%d /home/agent && cp -r /seed/. /home/agent/ && chown -R %d:%d /home/agent",
+			uid, gid, uid, gid,
+		)
+	} else {
+		// Windows: os.Getuid/os.Getgid return -1; Docker Desktop containers run
+		// as root through a Linux VM, so skip chown and only copy seed files.
+		shellCmd = "cp -r /seed/. /home/agent/"
+	}
 	if out, err := exec.Command("docker", "run", "--rm",
 		"-v", volumeName+":/home/agent",
 		"-v", tmpDir+":/seed:ro,z",

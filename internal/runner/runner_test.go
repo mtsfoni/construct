@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -78,6 +79,34 @@ func TestBuildRunArgs_MissingSecretSkipped(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_UserFlag verifies that --user is included on platforms where
+// os.Getuid() returns a valid ID (Linux/macOS) and omitted on Windows (where it
+// returns -1) to avoid passing an invalid --user -1:-1 to Docker.
+func TestBuildRunArgs_UserFlag(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "")
+
+	hasUser := false
+	for _, arg := range args {
+		if arg == "--user" {
+			hasUser = true
+			break
+		}
+	}
+
+	if os.Getuid() < 0 {
+		// Windows: --user must not be present to avoid --user -1:-1.
+		if hasUser {
+			t.Error("--user flag must not appear when os.Getuid() < 0 (Windows)")
+		}
+	} else {
+		// Linux/macOS: --user must be present for correct workspace ownership.
+		if !hasUser {
+			t.Error("--user flag must appear when os.Getuid() >= 0")
+		}
+	}
+}
+
 func TestWriteSecretFiles_CreatesFiles(t *testing.T) {
 	env := map[string]string{
 		"TOKEN_A": "aaa",
@@ -99,7 +128,8 @@ func TestWriteSecretFiles_CreatesFiles(t *testing.T) {
 			t.Errorf("%s = %q, want %q", key, content, want)
 		}
 		info, _ := os.Stat(filepath.Join(dir, key))
-		if info.Mode().Perm() != 0o600 {
+		// Windows does not enforce POSIX permission bits; skip the check there.
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 			t.Errorf("%s mode = %o, want 600", key, info.Mode().Perm())
 		}
 	}

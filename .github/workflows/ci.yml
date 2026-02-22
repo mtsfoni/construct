@@ -18,5 +18,8 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Build
-        run: go build ./cmd/construct
+      - name: Build (Linux)
+        run: GOOS=linux go build ./cmd/construct
+
+      - name: Build (Windows)
+        run: GOOS=windows go build ./cmd/construct

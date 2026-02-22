@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,10 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(dir)
 
 	bin := filepath.Join(dir, "construct")
-	out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput()
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".").CombinedOutput()
 	if err != nil {
 		panic("build binary: " + err.Error() + "\n" + string(out))
 	}
@@ -41,7 +45,9 @@ func run(t *testing.T, home, cwd string, args ...string) (stdout string, exitCod
 		cwd = t.TempDir()
 	}
 	cmd := exec.Command(binaryPath, args...)
-	cmd.Env = append(os.Environ(), "HOME="+home)
+	// Set both HOME and USERPROFILE so os.UserHomeDir() finds the right dir
+	// on both Linux/macOS (HOME) and Windows (USERPROFILE).
+	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home)
 	cmd.Dir = cwd
 	out, err := cmd.CombinedOutput()
 	stdout = string(out)
@@ -73,6 +79,9 @@ func TestConfigSet_WritesToGlobalFile(t *testing.T) {
 }
 
 func TestConfigSet_GlobalFileHas0600Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX permission bits")
+	}
 	home := t.TempDir()
 	if _, code := run(t, home, "", "config", "set", "KEY", "val"); code != 0 {
 		t.Fatal("non-zero exit")
@@ -114,8 +123,8 @@ func TestConfigSet_WritesToLocalFileWithFlag(t *testing.T) {
 
 func TestConfigSet_UpdatesExistingKey(t *testing.T) {
 	home := t.TempDir()
-	run(t, home, "", "config", "set", "TOKEN", "old")   //nolint:errcheck
-	run(t, home, "", "config", "set", "TOKEN", "new")   //nolint:errcheck
+	run(t, home, "", "config", "set", "TOKEN", "old") //nolint:errcheck
+	run(t, home, "", "config", "set", "TOKEN", "new") //nolint:errcheck
 
 	content, _ := os.ReadFile(filepath.Join(home, ".construct", ".env"))
 	count := strings.Count(string(content), "TOKEN=")

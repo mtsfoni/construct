@@ -2,7 +2,7 @@
 
 Run AI coding agents in yolo/auto-approve mode without giving them access to your actual machine. Not a perfect sandbox, but meaningfully better than running directly on your host. The agent gets its own isolated Docker daemon so it can build, test, and run containers freely without touching yours.
 
-> **Linux only (for now).** construct requires a Linux Docker host. Docker Desktop on macOS and Windows is not yet supported.
+> **Linux and Windows.** construct requires a Docker host (Docker Desktop, Engine, or OrbStack). Docker Desktop on macOS is not yet supported.
 
 ## How it works
 
@@ -19,12 +19,15 @@ This means the agent:
 
 ## Installation
 
-Download the pre-built binary (Linux x86-64):
+Download the pre-built binary:
 
-```bash
-curl -L https://github.com/mtsfoni/construct/releases/latest/download/construct-linux-amd64 -o ~/.local/bin/construct
-chmod +x ~/.local/bin/construct
-```
+- **Linux (x86-64):**
+  ```bash
+  curl -L https://github.com/mtsfoni/construct/releases/latest/download/construct-linux-amd64 -o ~/.local/bin/construct
+  chmod +x ~/.local/bin/construct
+  ```
+- **Windows (x86-64):**
+  Download `construct-windows-amd64.exe` from the [releases page](https://github.com/mtsfoni/construct/releases/latest).
 
 Or install via Go:
 

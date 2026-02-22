@@ -3,18 +3,20 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mtsfoni/construct/internal/config"
 )
 
-// withHome runs f with HOME set to a fresh temp directory, then restores it.
+// withHome sets HOME and USERPROFILE to a fresh temp directory for the
+// duration of the test. HOME is used by os.UserHomeDir on Linux/macOS;
+// USERPROFILE is used on Windows.
 func withHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	orig := os.Getenv("HOME")
 	t.Setenv("HOME", dir)
-	_ = orig
+	t.Setenv("USERPROFILE", dir)
 	return dir
 }
 
@@ -103,6 +105,9 @@ func TestSaveLastUsed_IndependentEntriesPerRepo(t *testing.T) {
 }
 
 func TestSaveLastUsed_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX permission bits")
+	}
 	home := withHome(t)
 
 	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node"))

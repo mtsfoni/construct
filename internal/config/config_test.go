@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mtsfoni/construct/internal/config"
@@ -51,6 +52,9 @@ func TestSet_CreatesFileWithCorrectContent(t *testing.T) {
 }
 
 func TestSet_CreatesFileWith0600Permissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX permission bits")
+	}
 	p := envPath(t)
 	if err := config.Set(p, "KEY", "val"); err != nil {
 		t.Fatalf("Set: %v", err)
