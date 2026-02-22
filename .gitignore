@@ -1,5 +1,6 @@
 # compiled binary
 /construct
+construct.exe
 
 # per-repo credential file — never commit secrets
 .construct/.env
