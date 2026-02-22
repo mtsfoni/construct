@@ -1,5 +1,11 @@
 # Security
 
+> **Disclaimer:** This document was largely generated with the assistance of an
+> LLM, using best-effort analysis and established security practices. AI-generated
+> security documentation can contain errors or omissions — as can human-written
+> documentation. Treat this as a starting point for your own assessment, not a
+> definitive audit. Corrections and pull requests are welcome.
+
 This document describes the security model for `construct`, focusing on how
 credentials are handled and what guarantees (and non-guarantees) the tool
 provides.
@@ -58,4 +64,5 @@ provides.
 
 ## Further reading
 
+- [Threat model](threat-model.md) — full catalogue of threats, mitigations, residual risks, and trade-offs
 - [ADR 001 — Docker secrets for credentials](adr/001-docker-secrets-for-credentials.md)
