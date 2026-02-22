@@ -14,6 +14,9 @@ type Tool struct {
 	RunCmd []string
 	// ExtraEnv holds additional environment variables to inject at run time (e.g. yolo flags).
 	ExtraEnv map[string]string
+	// HomeFiles maps paths relative to /home/agent to file contents that should be
+	// written into the home volume on first initialisation (e.g. tool config files).
+	HomeFiles map[string]string
 }
 
 var registry = map[string]*Tool{}
