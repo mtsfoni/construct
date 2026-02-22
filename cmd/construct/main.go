@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/mtsfoni/construct/internal/config"
 	"github.com/mtsfoni/construct/internal/runner"
@@ -19,22 +20,39 @@ func main() {
 		runConfig(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "qs" {
+		runQuickstart(os.Args[2:])
+		return
+	}
 	runAgent(os.Args[1:])
 }
 
 // runAgent is the original construct behaviour: build images and launch the agent.
 func runAgent(args []string) {
+	allTools := tools.All()
+	sort.Strings(allTools)
+	allStacks := stacks.All()
+
 	fs := flag.NewFlagSet("construct", flag.ExitOnError)
-	toolName := fs.String("tool", "", "AI tool to run: copilot, opencode")
-	stackName := fs.String("stack", "node", "Stack image to use: base, node, dotnet, python")
+	toolName := fs.String("tool", "", "AI tool to run: "+strings.Join(allTools, ", "))
+	stackName := fs.String("stack", "node", "Stack image to use: "+strings.Join(allStacks, ", "))
 	rebuild := fs.Bool("rebuild", false, "Force rebuild of the stack and tool images")
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--debug] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
-		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n\n")
-		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
+		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
+		fmt.Fprintf(os.Stderr, "Available tools:\n")
+		for _, t := range allTools {
+			fmt.Fprintf(os.Stderr, "  %s\n", t)
+		}
+		fmt.Fprintf(os.Stderr, "\nAvailable stacks:\n")
+		for _, s := range allStacks {
+			fmt.Fprintf(os.Stderr, "  %s\n", s)
+		}
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack dotnet /path/to/repo\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack node .\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack python ~/projects/myapp\n\n")
@@ -58,7 +76,7 @@ func runAgent(args []string) {
 	}
 
 	if !stacks.IsValid(*stackName) {
-		log.Fatalf("unknown stack %q; supported stacks: base, node, dotnet, python", *stackName)
+		log.Fatalf("unknown stack %q; supported stacks: %s", *stackName, strings.Join(allStacks, ", "))
 	}
 
 	repoPath := "."
@@ -71,6 +89,11 @@ func runAgent(args []string) {
 	}
 	if _, err := os.Stat(absRepoPath); os.IsNotExist(err) {
 		log.Fatalf("path does not exist: %s", absRepoPath)
+	}
+
+	// Persist so `construct qs` can replay this invocation.
+	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName); err != nil {
+		log.Printf("warning: could not save last-used settings: %v", err)
 	}
 
 	if err := runner.Run(&runner.Config{
@@ -175,4 +198,39 @@ func targetEnvFile(local bool) (string, error) {
 		return config.LocalFile(cwd), nil
 	}
 	return config.GlobalFile()
+}
+
+// runQuickstart re-runs the last tool/stack recorded for the target repo.
+func runQuickstart(args []string) {
+	fs := flag.NewFlagSet("construct qs", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: construct qs [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Re-runs the last tool and stack used for the given repo (defaults to cwd).\n")
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	repoPath := "."
+	if fs.NArg() > 0 {
+		repoPath = fs.Arg(0)
+	}
+	absRepoPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		log.Fatalf("resolve path: %v", err)
+	}
+	if _, err := os.Stat(absRepoPath); os.IsNotExist(err) {
+		log.Fatalf("path does not exist: %s", absRepoPath)
+	}
+
+	last, err := config.LoadLastUsed(absRepoPath)
+	if err != nil {
+		log.Fatalf("qs: load last-used: %v", err)
+	}
+	if last.Tool == "" {
+		log.Fatalf("qs: no previous run recorded for %s", absRepoPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "construct qs: reusing --tool %s --stack %s\n", last.Tool, last.Stack)
+	runAgent([]string{"--tool", last.Tool, "--stack", last.Stack, absRepoPath})
 }

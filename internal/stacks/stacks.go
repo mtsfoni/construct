@@ -12,11 +12,16 @@ import (
 var dockerfiles embed.FS
 
 // validStacks is the ordered list of supported stack names.
-var validStacks = []string{"base", "node", "dotnet", "python"}
+var validStacks = []string{"base", "node", "dotnet", "python", "go"}
 
 // ImageName returns the Docker image name for a given stack.
 func ImageName(stack string) string {
 	return "construct-" + stack
+}
+
+// All returns the list of supported stack names.
+func All() []string {
+	return validStacks
 }
 
 // IsValid reports whether the given stack name is supported.
@@ -33,7 +38,7 @@ func IsValid(stack string) bool {
 // already exist, or if rebuild is true.
 func EnsureBuilt(stack string, rebuild bool) error {
 	if !IsValid(stack) {
-		return fmt.Errorf("unknown stack %q; supported stacks: base, node, dotnet, python", stack)
+		return fmt.Errorf("unknown stack %q; supported stacks: base, node, dotnet, python, go", stack)
 	}
 
 	// Non-base stacks depend on the base image.

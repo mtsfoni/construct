@@ -139,7 +139,7 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, s
 	// wrapper will export each file as an environment variable. This keeps
 	// credential values out of docker inspect output (unlike -e KEY=val).
 	if secretsDir != "" {
-		args = append(args, "-v", secretsDir+":/run/secrets:ro")
+		args = append(args, "-v", secretsDir+":/run/secrets:ro,z")
 	}
 
 	// Inject extra env vars required by the tool (e.g. OPENCODE_PERMISSION for yolo mode).

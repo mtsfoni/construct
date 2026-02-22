@@ -11,6 +11,8 @@ This means the agent:
 - Gets a clean, empty Docker environment to build and run whatever it needs
 - Is still contained inside a Linux container with no special host mounts (beyond the repo)
 
+**Testcontainers works out of the box.** Because the agent has its own Docker daemon, frameworks like [Testcontainers](https://testcontainers.com/) that spin up containers during tests just work — no extra configuration needed.
+
 > **Not a security guarantee.** A sufficiently motivated agent could escape the container. This tool is about isolation and a clean workspace, not hardened sandboxing.
 
 ## Installation
@@ -27,10 +29,21 @@ cd construct
 go build -o construct ./cmd/construct
 ```
 
+## Quickstart (qs)
+
+After running `construct` at least once in a repo, you can replay the same tool and stack with:
+
+```bash
+construct qs [path]
+```
+
+`path` defaults to the current directory. The last-used tool/stack per repo is stored in `~/.construct/last-used.json`.
+
 ## Usage
 
 ```
 construct --tool <tool> [--stack <stack>] [--rebuild] [path]
+construct qs [path]
 ```
 
 `path` defaults to the current working directory.
@@ -46,7 +59,7 @@ construct --tool opencode --stack python ~/projects/myapp
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
-| `--stack` | `node` | Language stack: `base`, `node`, `dotnet`, `python` |
+| `--stack` | `node` | Language stack: `base`, `node`, `dotnet`, `python`, `go` |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
 
 ## Supported tools
@@ -64,6 +77,7 @@ construct --tool opencode --stack python ~/projects/myapp
 | `node` | base | — |
 | `dotnet` | base | .NET 10 SDK |
 | `python` | base | Python 3, pip |
+| `go` | base | Go 1.24 |
 
 ## Auth / config
 
@@ -96,6 +110,7 @@ construct/
       dockerfiles/
         base/Dockerfile
         dotnet/Dockerfile
+        go/Dockerfile
         node/Dockerfile
         python/Dockerfile
     dind/                           # dind lifecycle management

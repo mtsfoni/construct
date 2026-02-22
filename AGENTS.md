@@ -1,5 +1,9 @@
 # construct – Copilot Instructions
 
+## Workflow
+
+**Tests first.** Before implementing any feature or fix, write the tests that define the expected behaviour. Only then write the code to make them pass. Run `go test ./...` to verify the full suite stays green.
+
 ## Build & test
 
 ```bash
@@ -41,6 +45,8 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 
 ## Key conventions
 
+**Any change that alters product behaviour** (new commands, new flags, new stacks/tools, changed defaults, new persistence) **must be accompanied by a spec document** in `docs/spec/`. Name the file after the feature (e.g. `docs/spec/quickstart-qs.md`). The spec should cover: the problem, the solution/behaviour, persistence details if applicable, and a table of files changed.
+
 **Adding a new tool** — create a new file in `internal/tools/` that calls `register(&Tool{...})` in `init()`. No other registration is needed.
 
 **Adding a new stack** — add a `Dockerfile` under `internal/stacks/dockerfiles/<name>/` and add the name to `validStacks` in `stacks.go`. The `//go:embed dockerfiles` directive picks it up automatically.
@@ -52,3 +58,5 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 **Home volume persistence** — the agent's `/home/agent` is a named Docker volume (`construct-home-<tool>-<8-byte-hex>`). It survives container restarts, preserving shell history, tool caches, and any seeded config files defined in `Tool.HomeFiles`. The volume is only initialised once; `--rebuild` does not reset it.
 
 **No external Go dependencies** — `go.mod` declares no `require` directives. Everything is standard library + `os/exec` shelling out to `docker`.
+
+**SELinux hosts (Fedora, RHEL, etc.)** — all host bind mounts must carry the `:z` relabeling suffix so SELinux grants the container access. This applies to `/workspace`, `/run/secrets`, instruction file mounts, and the home volume seed dir. Named Docker volumes do not need `:z`. If a container silently fails to read a bind-mounted path, a missing `:z` is the first thing to check.
