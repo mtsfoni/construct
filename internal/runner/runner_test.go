@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestBuildRunArgs_UsesSecretNotEnv(t *testing.T) {
 	}
 
 	cfg := fakeConfig(t, []string{"MY_TOKEN"})
-	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", secretsDir)
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", secretsDir)
 
 	joined := strings.Join(args, " ")
 
@@ -68,7 +69,7 @@ func TestBuildRunArgs_MissingSecretSkipped(t *testing.T) {
 	secretsDir := t.TempDir()
 
 	cfg := fakeConfig(t, []string{"MISSING_KEY"})
-	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", secretsDir)
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", secretsDir)
 
 	// The secrets dir is still mounted; MISSING_KEY simply won't be present inside.
 	joined := strings.Join(args, " ")
@@ -165,7 +166,7 @@ func TestEnsureHomeVolume_SetsLabel(t *testing.T) {
 	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
 	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
 
-	if err := ensureHomeVolume(volumeName, "", nil); err != nil {
+	if err := ensureHomeVolume(volumeName, "", nil, ""); err != nil {
 		t.Fatalf("ensureHomeVolume: %v", err)
 	}
 
@@ -179,6 +180,50 @@ func TestEnsureHomeVolume_SetsLabel(t *testing.T) {
 	got := strings.TrimSpace(string(out))
 	if got != "true" {
 		t.Errorf("label io.construct.managed = %q, want %q", got, "true")
+	}
+}
+
+// TestEnsureHomeVolume_PreCreatesAuthParentDirs is an integration test that
+// verifies that when authMountPath is set, ensureHomeVolume pre-creates the
+// parent directories inside the home volume and chowns them to the current
+// user. This prevents Docker's automatic mount-point creation for nested auth
+// volumes from leaving intermediate directories (e.g. /home/agent/.local)
+// root-owned, which would block the agent from creating siblings like
+// /home/agent/.local/state (EACCES).
+func TestEnsureHomeVolume_PreCreatesAuthParentDirs(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	volumeName := "construct-test-authdirs-" + t.Name()
+	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
+
+	authMountPath := "/home/agent/.local/share/opencode"
+	if err := ensureHomeVolume(volumeName, "", nil, authMountPath); err != nil {
+		t.Fatalf("ensureHomeVolume: %v", err)
+	}
+
+	uid := os.Getuid()
+	gid := os.Getgid()
+
+	// Verify that /home/agent/.local/share exists and is owned by the current user.
+	// We use stat -c "%u %g" for portable numeric uid:gid output.
+	out, err := exec.Command("docker", "run", "--rm",
+		"-v", volumeName+":/home/agent",
+		"ubuntu:22.04",
+		"sh", "-c", "stat -c '%u %g' /home/agent/.local && stat -c '%u %g' /home/agent/.local/share",
+	).Output()
+	if err != nil {
+		t.Fatalf("stat in volume: %v", err)
+	}
+
+	want := fmt.Sprintf("%d %d", uid, gid)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != want {
+			t.Errorf("unexpected ownership %q, want %q (uid:gid of current user)", line, want)
+		}
 	}
 }
 
@@ -253,5 +298,161 @@ func TestEntrypointScript_ExportsSecrets(t *testing.T) {
 	got := strings.TrimSpace(string(out))
 	if got != "hello-from-secret" {
 		t.Errorf("entrypoint exported %q, want %q", got, "hello-from-secret")
+	}
+}
+
+// dockerAvailable returns true if the Docker CLI and daemon are both usable.
+func dockerAvailable() bool {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	return exec.Command("docker", "info").Run() == nil
+}
+
+// TestRemoveHomeVolume_RemovesVolume creates a real Docker volume and verifies
+// that removeHomeVolume deletes it.
+func TestRemoveHomeVolume_RemovesVolume(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	volumeName := "construct-test-remove-" + t.Name()
+	// Clean up any leftover from a previous run.
+	exec.Command("docker", "volume", "rm", volumeName).Run() //nolint:errcheck
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
+
+	// Create the volume.
+	if out, err := exec.Command("docker", "volume", "create", volumeName).CombinedOutput(); err != nil {
+		t.Fatalf("create volume: %v\n%s", err, out)
+	}
+
+	if err := removeHomeVolume(volumeName); err != nil {
+		t.Fatalf("removeHomeVolume: %v", err)
+	}
+
+	// Inspect should now fail because the volume is gone.
+	out, err := exec.Command("docker", "volume", "inspect", volumeName).CombinedOutput()
+	if err == nil {
+		t.Errorf("expected volume to be gone, but inspect succeeded: %s", out)
+	}
+}
+
+// TestRemoveHomeVolume_NoopWhenAbsent verifies that removeHomeVolume does not
+// return an error when the volume does not exist.
+func TestRemoveHomeVolume_NoopWhenAbsent(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	volumeName := "construct-test-absent-" + t.Name()
+	// Make absolutely sure it does not exist.
+	exec.Command("docker", "volume", "rm", volumeName).Run() //nolint:errcheck
+
+	if err := removeHomeVolume(volumeName); err != nil {
+		t.Errorf("removeHomeVolume on absent volume returned error: %v", err)
+	}
+}
+
+// TestAuthVolumeName_IsGlobal verifies that authVolumeName is not keyed by repo
+// path — the same tool always produces the same volume name.
+func TestAuthVolumeName_IsGlobal(t *testing.T) {
+	name1 := authVolumeName("opencode")
+	name2 := authVolumeName("opencode")
+	if name1 != name2 {
+		t.Errorf("authVolumeName not deterministic: %q vs %q", name1, name2)
+	}
+	if !strings.HasPrefix(name1, "construct-auth-") {
+		t.Errorf("authVolumeName %q does not start with construct-auth-", name1)
+	}
+}
+
+// TestAuthVolumeName_DiffersFromHomeVolume verifies that the auth volume name
+// cannot collide with any home volume name.
+func TestAuthVolumeName_DiffersFromHomeVolume(t *testing.T) {
+	authName := authVolumeName("opencode")
+	homeName := homeVolumeName("/some/repo", "opencode")
+	if authName == homeName {
+		t.Errorf("authVolumeName and homeVolumeName collide: %q", authName)
+	}
+}
+
+// TestBuildRunArgs_MountsAuthVolume verifies that when a tool defines
+// AuthVolumePath the global auth volume is mounted at that path.
+func TestBuildRunArgs_MountsAuthVolume(t *testing.T) {
+	cfg := &Config{
+		Tool: &tools.Tool{
+			Name:           "testtool",
+			RunCmd:         []string{"echo"},
+			AuthVolumePath: "/home/agent/.local/share/testtool",
+		},
+		Stack:    "node",
+		RepoPath: t.TempDir(),
+	}
+	authVol := authVolumeName("testtool")
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", authVol, "")
+	joined := strings.Join(args, " ")
+
+	want := authVol + ":/home/agent/.local/share/testtool"
+	if !strings.Contains(joined, want) {
+		t.Errorf("expected auth volume mount %q in args, got: %s", want, joined)
+	}
+}
+
+// TestBuildRunArgs_NoAuthVolumeWhenPathEmpty verifies that no extra volume is
+// mounted when AuthVolumePath is empty (i.e. the tool does not need one).
+func TestBuildRunArgs_NoAuthVolumeWhenPathEmpty(t *testing.T) {
+	cfg := fakeConfig(t, nil) // AuthVolumePath is ""
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "construct-auth-") {
+		t.Errorf("unexpected auth volume in args: %s", joined)
+	}
+}
+
+// TestEnsureAuthVolume_SetsLabel verifies the auth volume is created with the
+// io.construct.managed=true label so docker volume prune ignores it.
+func TestEnsureAuthVolume_SetsLabel(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	volumeName := "construct-test-auth-label-" + t.Name()
+	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
+
+	if err := ensureAuthVolume(volumeName); err != nil {
+		t.Fatalf("ensureAuthVolume: %v", err)
+	}
+
+	out, err := exec.Command("docker", "volume", "inspect",
+		"--format", "{{index .Labels \"io.construct.managed\"}}",
+		volumeName,
+	).Output()
+	if err != nil {
+		t.Fatalf("inspect volume: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "true" {
+		t.Errorf("label io.construct.managed = %q, want %q", got, "true")
+	}
+}
+
+// TestEnsureAuthVolume_IdempotentWhenExists verifies that calling ensureAuthVolume
+// on a volume that already exists returns no error.
+func TestEnsureAuthVolume_IdempotentWhenExists(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	volumeName := "construct-test-auth-idempotent-" + t.Name()
+	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
+	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
+
+	if err := ensureAuthVolume(volumeName); err != nil {
+		t.Fatalf("first ensureAuthVolume: %v", err)
+	}
+	if err := ensureAuthVolume(volumeName); err != nil {
+		t.Fatalf("second ensureAuthVolume (idempotent): %v", err)
 	}
 }

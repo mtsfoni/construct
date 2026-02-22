@@ -17,6 +17,11 @@ type Tool struct {
 	// HomeFiles maps paths relative to /home/agent to file contents that should be
 	// written into the home volume on first initialisation (e.g. tool config files).
 	HomeFiles map[string]string
+	// AuthVolumePath is the absolute path inside the container where the tool stores
+	// its OAuth tokens and persistent auth state (e.g. "/home/agent/.local/share/opencode").
+	// When non-empty, a global named Docker volume is mounted at this path so that
+	// auth state is shared across all repos and survives --reset.
+	AuthVolumePath string
 }
 
 var registry = map[string]*Tool{}

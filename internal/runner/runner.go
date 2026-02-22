@@ -26,6 +26,10 @@ type Config struct {
 	Rebuild  bool
 	// Debug drops into an interactive shell instead of starting the tool.
 	Debug bool
+	// Reset removes the persistent home volume before starting so it is
+	// re-created and re-seeded from scratch. Useful when HomeFiles have
+	// changed and the user wants the new defaults without manual Docker commands.
+	Reset bool
 }
 
 // Run builds images, starts dind, and runs the agent container.
@@ -52,8 +56,25 @@ func Run(cfg *Config) error {
 
 	// 4. Ensure the persistent home volume exists and is owned by the host user.
 	homVol := homeVolumeName(cfg.RepoPath, cfg.Tool.Name)
-	if err := ensureHomeVolume(homVol, stacks.ImageName(cfg.Stack)+"-"+cfg.Tool.Name, cfg.Tool.HomeFiles); err != nil {
+	if cfg.Reset {
+		fmt.Println("construct: resetting home volume…")
+		if err := removeHomeVolume(homVol); err != nil {
+			return fmt.Errorf("reset home volume: %w", err)
+		}
+	}
+	if err := ensureHomeVolume(homVol, stacks.ImageName(cfg.Stack)+"-"+cfg.Tool.Name, cfg.Tool.HomeFiles, cfg.Tool.AuthVolumePath); err != nil {
 		return fmt.Errorf("ensure home volume: %w", err)
+	}
+
+	// 4b. Ensure the global auth volume exists when the tool needs one.
+	// This volume is NOT keyed by repo and is NOT wiped by --reset, so OAuth
+	// tokens and other auth state persist across repos and resets.
+	var authVol string
+	if cfg.Tool.AuthVolumePath != "" {
+		authVol = authVolumeName(cfg.Tool.Name)
+		if err := ensureAuthVolume(authVol); err != nil {
+			return fmt.Errorf("ensure auth volume: %w", err)
+		}
 	}
 
 	// 5. Load environment variables (global then per-repo override).
@@ -101,7 +122,7 @@ func Run(cfg *Config) error {
 	}()
 
 	// 8. Build the docker run argument list.
-	args := buildRunArgs(cfg, dindInst, toolImage, sessionID, homVol, secretsDir)
+	args := buildRunArgs(cfg, dindInst, toolImage, sessionID, homVol, authVol, secretsDir)
 
 	// 9. Run the agent container interactively.
 
@@ -118,7 +139,7 @@ func Run(cfg *Config) error {
 }
 
 // buildRunArgs assembles the arguments for "docker run" that starts the agent.
-func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, secretsDir string) []string {
+func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, authVolume, secretsDir string) []string {
 	// Run as the host user so the bind-mounted workspace directory is accessible.
 	uid := os.Getuid()
 	gid := os.Getgid()
@@ -149,6 +170,12 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, s
 		"-v", cfg.RepoPath+":/workspace:z",
 		"-w", "/workspace",
 	)
+
+	// Mount the global auth volume when the tool defines one. This volume is
+	// NOT wiped by --reset so OAuth tokens survive across resets and repos.
+	if authVolume != "" && cfg.Tool.AuthVolumePath != "" {
+		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
+	}
 
 	// Mount the secrets directory read-only at /run/secrets; the entrypoint
 	// wrapper will export each file as an environment variable. This keeps
@@ -314,9 +341,67 @@ func homeVolumeName(repoPath, toolName string) string {
 	return "construct-home-" + toolName + "-" + hex.EncodeToString(h[:8])
 }
 
+// authVolumeName returns a deterministic Docker volume name for the tool's
+// global auth state. Unlike homeVolumeName it is NOT keyed by repo path, so
+// the same volume is shared across all repos and survives --reset.
+func authVolumeName(toolName string) string {
+	return "construct-auth-" + toolName
+}
+
+// ensureAuthVolume creates the named auth volume if it does not already exist.
+// Unlike ensureHomeVolume it does not seed any files — the tool writes its own
+// auth state at runtime — and ownership is set to the current user.
+func ensureAuthVolume(volumeName string) error {
+	out, err := exec.Command("docker", "volume", "inspect", "--format", "{{.Name}}", volumeName).Output()
+	if err == nil && strings.TrimSpace(string(out)) == volumeName {
+		return nil // already exists
+	}
+
+	if out, err := exec.Command("docker", "volume", "create",
+		"--label", "io.construct.managed=true",
+		volumeName,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("create auth volume %s: %w\n%s", volumeName, err, string(out))
+	}
+
+	// Set ownership so the agent user can write to it.
+	uid := os.Getuid()
+	gid := os.Getgid()
+	shellCmd := fmt.Sprintf("chown %d:%d /auth", uid, gid)
+	if out, err := exec.Command("docker", "run", "--rm",
+		"-v", volumeName+":/auth",
+		"ubuntu:22.04",
+		"sh", "-c", shellCmd,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("init auth volume: %w\n%s", err, string(out))
+	}
+	return nil
+}
+
+// removeHomeVolume removes the named Docker volume. It is a no-op when the
+// volume does not exist, so callers need not check first.
+func removeHomeVolume(volumeName string) error {
+	out, err := exec.Command("docker", "volume", "rm", volumeName).CombinedOutput()
+	if err != nil {
+		// docker volume rm exits non-zero when the volume does not exist;
+		// treat that as success.
+		if strings.Contains(strings.ToLower(string(out)), "no such volume") {
+			return nil
+		}
+		return fmt.Errorf("remove volume %s: %w\n%s", volumeName, err, string(out))
+	}
+	return nil
+}
+
 // ensureHomeVolume creates the named volume if it does not already exist,
 // sets its ownership to the current user, and seeds any tool config files.
-func ensureHomeVolume(volumeName, image string, seedFiles map[string]string) error {
+// authMountPath is the container path where the auth volume will be nested
+// inside the home dir (e.g. /home/agent/.local/share/opencode). When set, the
+// parent directories of that path are pre-created inside the home volume with
+// correct ownership so that Docker's mount-point creation for the nested auth
+// volume does not produce root-owned intermediate directories that would block
+// the agent user from writing siblings (e.g. /home/agent/.local/state).
+func ensureHomeVolume(volumeName, image string, seedFiles map[string]string, authMountPath string) error {
 	// Check whether the volume already exists.
 	out, err := exec.Command("docker", "volume", "inspect", "--format", "{{.Name}}", volumeName).Output()
 	if err == nil && strings.TrimSpace(string(out)) == volumeName {
@@ -348,19 +433,34 @@ func ensureHomeVolume(volumeName, image string, seedFiles map[string]string) err
 		}
 	}
 
+	// When the tool mounts an auth volume nested inside the home dir, pre-create
+	// the parent directories so Docker's automatic mount-point creation for the
+	// auth volume does not leave intermediate dirs as root-owned. For example,
+	// with authMountPath=/home/agent/.local/share/opencode we pre-create
+	// /home/agent/.local/share, ensuring /home/agent/.local is user-owned and
+	// the agent can create siblings like /home/agent/.local/state.
+	extraMkdir := ""
+	const homePrefix = "/home/agent/"
+	if authMountPath != "" && strings.HasPrefix(authMountPath, homePrefix) {
+		parentDir := filepath.Dir(authMountPath)
+		if parentDir != "/home/agent" {
+			extraMkdir = " && mkdir -p " + parentDir
+		}
+	}
+
 	// Initialise ownership and copy seed files using a single container.
 	uid := os.Getuid()
 	gid := os.Getgid()
 	var shellCmd string
 	if uid >= 0 && gid >= 0 {
 		shellCmd = fmt.Sprintf(
-			"chown %d:%d /home/agent && cp -r /seed/. /home/agent/ && chown -R %d:%d /home/agent",
-			uid, gid, uid, gid,
+			"chown %d:%d /home/agent%s && cp -r /seed/. /home/agent/ && chown -R %d:%d /home/agent",
+			uid, gid, extraMkdir, uid, gid,
 		)
 	} else {
 		// Windows: os.Getuid/os.Getgid return -1; Docker Desktop containers run
 		// as root through a Linux VM, so skip chown and only copy seed files.
-		shellCmd = "cp -r /seed/. /home/agent/"
+		shellCmd = "cp -r /seed/. /home/agent/" + extraMkdir
 	}
 	if out, err := exec.Command("docker", "run", "--rm",
 		"-v", volumeName+":/home/agent",

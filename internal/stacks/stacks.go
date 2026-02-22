@@ -6,13 +6,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed dockerfiles
 var dockerfiles embed.FS
 
 // validStacks is the ordered list of supported stack names.
-var validStacks = []string{"base", "node", "dotnet", "python", "go"}
+var validStacks = []string{"base", "node", "dotnet", "python", "go", "ui"}
+
+// stackDeps maps a stack name to the ordered list of prerequisite stack images
+// that must be present before that stack can be built.
+var stackDeps = map[string][]string{
+	"ui": {"base", "node"},
+}
 
 // ImageName returns the Docker image name for a given stack.
 func ImageName(stack string) string {
@@ -34,19 +41,25 @@ func IsValid(stack string) bool {
 	return false
 }
 
-// EnsureBuilt builds the stack image (and its base dependency) if it does not
+// EnsureBuilt builds the stack image (and its dependencies) if they do not
 // already exist, or if rebuild is true.
 func EnsureBuilt(stack string, rebuild bool) error {
 	if !IsValid(stack) {
-		return fmt.Errorf("unknown stack %q; supported stacks: base, node, dotnet, python, go", stack)
+		return fmt.Errorf("unknown stack %q; supported stacks: %s", stack, strings.Join(validStacks, ", "))
 	}
 
-	// Non-base stacks depend on the base image.
-	if stack != "base" {
-		baseName := ImageName("base")
-		if rebuild || !imageExists(baseName) {
-			if err := build("base", baseName); err != nil {
-				return fmt.Errorf("build base image: %w", err)
+	// Build explicit dependencies declared in stackDeps first.
+	// For stacks without an entry the implicit rule applies: every non-base
+	// stack depends on the base image.
+	deps, hasDeps := stackDeps[stack]
+	if !hasDeps && stack != "base" {
+		deps = []string{"base"}
+	}
+	for _, dep := range deps {
+		depName := ImageName(dep)
+		if rebuild || !imageExists(depName) {
+			if err := build(dep, depName); err != nil {
+				return fmt.Errorf("build %s image: %w", dep, err)
 			}
 		}
 	}
