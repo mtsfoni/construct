@@ -5,7 +5,8 @@
 ### Added
 
 - **`--port` flag** — publish container ports to the host. Repeatable; accepts any format `docker run -p` supports (`3000`, `9000:3000`, `127.0.0.1:3000:3000`). A bare port number is automatically expanded to `host:container`.
-- **`--mcp` flag** — activate MCP servers at container startup. When passed, the entrypoint writes `~/.config/opencode/opencode.json` registering `@playwright/mcp`; without it the file is removed. Requires `--stack ui` for full browser automation support.
+- **`--mcp` flag** — activate MCP servers at container startup. When passed, the entrypoint writes `~/.config/opencode/opencode.json` registering `@playwright/mcp`; without it the file is removed. Requires `--stack ui` or `--stack dotnet-ui` for full browser automation support.
+- **`dotnet-ui` stack** — new `construct-dotnet-ui` image combining the .NET 10 SDK with `@playwright/mcp` and Chromium. Extends `construct-dotnet`; use with `--mcp` for Blazor/ASP.NET projects that need browser automation.
 - **Automatic AGENTS.md injection** — the entrypoint always writes `~/.config/opencode/AGENTS.md` so opencode knows it is running inside a construct container. When `--port` is used the file also contains server binding rules (bind to `0.0.0.0`, use the ports listed in `$CONSTRUCT_PORTS`), preventing the common mistake of agents starting dev servers on `127.0.0.1` which is unreachable from the host.
 - **`CONSTRUCT=1` env var** — always injected into the agent container so tools can detect they are running inside construct.
 - **`CONSTRUCT_PORTS` env var** — injected when `--port` is used; contains the comma-separated list of container-side port numbers.
@@ -15,7 +16,7 @@
 
 - **Stack consolidation** — `node` and `python` stacks are removed. Python 3, pip, and venv are now included in the `base` image alongside Node.js 20. The `ui` stack now extends `base` directly. Any invocation using `--stack node` or `--stack python` should switch to `--stack base` (or a more specific stack).
 - **Default stack changed from `node` to `base`** — reflects the consolidation above.
-- **MCP activation decoupled from stack** — `@playwright/mcp` is installed in the `ui` stack image at build time but is only activated at runtime when `--mcp` is passed. Previously the MCP config was seeded unconditionally into the home volume.
+- **MCP activation decoupled from stack** — `@playwright/mcp` is installed in the `ui` and `dotnet-ui` stack images at build time but is only activated at runtime when `--mcp` is passed. Previously the MCP config was seeded unconditionally into the home volume.
 
 ---
 

@@ -6,7 +6,7 @@ import (
 )
 
 func TestIsValid_KnownStacks(t *testing.T) {
-	known := []string{"base", "dotnet", "go", "ui"}
+	known := []string{"base", "dotnet", "dotnet-ui", "go", "ui"}
 	for _, s := range known {
 		if !IsValid(s) {
 			t.Errorf("IsValid(%q) = false, want true", s)
@@ -133,6 +133,49 @@ func TestEmbeddedDockerfiles_UIContent(t *testing.T) {
 	for _, c := range checks {
 		if !strings.Contains(content, c.snippet) {
 			t.Errorf("ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+func TestStackDeps_DotnetUIHasBaseAndDotnet(t *testing.T) {
+	deps, ok := stackDeps["dotnet-ui"]
+	if !ok {
+		t.Fatal("stackDeps[\"dotnet-ui\"] not set")
+	}
+	if len(deps) != 2 || deps[0] != "base" || deps[1] != "dotnet" {
+		t.Errorf("stackDeps[\"dotnet-ui\"] = %v, want [\"base\", \"dotnet\"]", deps)
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetUIExists(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile for dotnet-ui not found: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("embedded Dockerfile for dotnet-ui is empty")
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetUIContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded dotnet-ui Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"extends construct-dotnet", "FROM construct-dotnet"},
+		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
+		{"installs Chromium via playwright cli", "playwright install"},
+		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("dotnet-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
 		}
 	}
 }

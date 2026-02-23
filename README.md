@@ -95,6 +95,7 @@ construct qs [path]
 |-------|------|-----------|
 | `base` | Ubuntu 22.04, Node 20, Python 3, Docker CLI, buildx, git | — |
 | `dotnet` | base | .NET 10 SDK |
+| `dotnet-ui` | dotnet | `@playwright/mcp`, Chromium |
 | `go` | base | Go 1.24 |
 | `ui` | base | `@playwright/mcp`, Chromium |
 
