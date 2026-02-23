@@ -30,6 +30,11 @@ type Config struct {
 	// re-created and re-seeded from scratch. Useful when HomeFiles have
 	// changed and the user wants the new defaults without manual Docker commands.
 	Reset bool
+	// MCP enables MCP server activation. When true, the entrypoint writes the
+	// opencode MCP config (~/.config/opencode/opencode.json) at container startup
+	// via the CONSTRUCT_MCP=1 environment variable. @playwright/mcp must be
+	// installed in the stack image (i.e. --stack ui) for the MCP server to work.
+	MCP bool
 }
 
 // Run builds images, starts dind, and runs the agent container.
@@ -189,6 +194,11 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, a
 		args = append(args, "-e", k+"="+v)
 	}
 
+	// Signal the entrypoint to write the MCP config when --mcp is set.
+	if cfg.MCP {
+		args = append(args, "-e", "CONSTRUCT_MCP=1")
+	}
+
 	args = append(args, image)
 	if cfg.Debug {
 		args = append(args, "/bin/bash")
@@ -222,17 +232,9 @@ func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
 		return err
 	}
 
-	// Write the entrypoint wrapper that exports /run/secrets/* as env vars.
-	entrypoint := "#!/bin/sh\n" +
-		"# Export any secrets mounted at /run/secrets/ as environment variables.\n" +
-		"if [ -d /run/secrets ]; then\n" +
-		"  for f in /run/secrets/*; do\n" +
-		"    [ -f \"$f\" ] || continue\n" +
-		"    export \"$(basename \"$f\")=$(cat \"$f\")\"\n" +
-		"  done\n" +
-		"fi\n" +
-		"exec \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "construct-entrypoint.sh"), []byte(entrypoint), 0o755); err != nil {
+	// Write the entrypoint wrapper that exports /run/secrets/* as env vars
+	// and optionally writes the opencode MCP config when CONSTRUCT_MCP=1.
+	if err := os.WriteFile(filepath.Join(dir, "construct-entrypoint.sh"), []byte(generatedEntrypoint()), 0o755); err != nil {
 		return err
 	}
 
@@ -240,6 +242,39 @@ func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// generatedEntrypoint returns the shell script baked into every tool image as
+// /usr/local/bin/construct-entrypoint. It is a separate function so that tests
+// can assert on its content without building a Docker image.
+func generatedEntrypoint() string {
+	return "#!/bin/sh\n" +
+		"# Export any secrets mounted at /run/secrets/ as environment variables.\n" +
+		"if [ -d /run/secrets ]; then\n" +
+		"  for f in /run/secrets/*; do\n" +
+		"    [ -f \"$f\" ] || continue\n" +
+		"    export \"$(basename \"$f\")=$(cat \"$f\")\"\n" +
+		"  done\n" +
+		"fi\n" +
+		"# Write opencode MCP config if --mcp was requested; delete it otherwise so\n" +
+		"# that a persistent home volume does not carry a stale config from a previous\n" +
+		"# run that used --mcp.\n" +
+		"if [ \"${CONSTRUCT_MCP}\" = \"1\" ]; then\n" +
+		"  mkdir -p \"${HOME}/.config/opencode\"\n" +
+		"  cat > \"${HOME}/.config/opencode/opencode.json\" << 'MCPEOF'\n" +
+		"{\n" +
+		"  \"mcp\": {\n" +
+		"    \"playwright\": {\n" +
+		"      \"type\": \"local\",\n" +
+		"      \"command\": [\"npx\", \"-y\", \"@playwright/mcp\", \"--browser\", \"chromium\"]\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n" +
+		"MCPEOF\n" +
+		"else\n" +
+		"  rm -f \"${HOME}/.config/opencode/opencode.json\"\n" +
+		"fi\n" +
+		"exec \"$@\"\n"
 }
 
 // toolImageExists checks whether a Docker image is available locally.

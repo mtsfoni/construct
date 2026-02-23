@@ -254,14 +254,7 @@ func TestEntrypointScript_ExportsSecrets(t *testing.T) {
 		t.Skip("bind mounts from current filesystem not visible inside containers (DinD environment)")
 	}
 
-	entrypoint := "#!/bin/sh\n" +
-		"if [ -d /run/secrets ]; then\n" +
-		"  for f in /run/secrets/*; do\n" +
-		"    [ -f \"$f\" ] || continue\n" +
-		"    export \"$(basename \"$f\")=$(cat \"$f\")\"\n" +
-		"  done\n" +
-		"fi\n" +
-		"exec \"$@\"\n"
+	entrypoint := generatedEntrypoint()
 
 	secretsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(secretsDir, "TEST_SECRET"), []byte("hello-from-secret"), 0o600); err != nil {
@@ -318,7 +311,7 @@ func TestRemoveHomeVolume_RemovesVolume(t *testing.T) {
 
 	volumeName := "construct-test-remove-" + t.Name()
 	// Clean up any leftover from a previous run.
-	exec.Command("docker", "volume", "rm", volumeName).Run() //nolint:errcheck
+	exec.Command("docker", "volume", "rm", volumeName).Run()                       //nolint:errcheck
 	t.Cleanup(func() { exec.Command("docker", "volume", "rm", volumeName).Run() }) //nolint:errcheck
 
 	// Create the volume.
@@ -455,4 +448,122 @@ func TestEnsureAuthVolume_IdempotentWhenExists(t *testing.T) {
 	if err := ensureAuthVolume(volumeName); err != nil {
 		t.Fatalf("second ensureAuthVolume (idempotent): %v", err)
 	}
+}
+
+// TestBuildRunArgs_MCPEnvVar_WhenMCPTrue asserts that CONSTRUCT_MCP=1 is
+// present in the docker run args when cfg.MCP is true.
+func TestBuildRunArgs_MCPEnvVar_WhenMCPTrue(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		Stack:    "ui",
+		RepoPath: t.TempDir(),
+		MCP:      true,
+	}
+	args := buildRunArgs(cfg, fakeDind(), "construct-ui-opencode", "testsess", "home-vol", "", "")
+	if !containsPair(args, "-e", "CONSTRUCT_MCP=1") {
+		t.Errorf("expected -e CONSTRUCT_MCP=1 in args when MCP=true; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_MCPEnvVar_AbsentWhenMCPFalse asserts that CONSTRUCT_MCP is
+// not injected when cfg.MCP is false.
+func TestBuildRunArgs_MCPEnvVar_AbsentWhenMCPFalse(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		Stack:    "ui",
+		RepoPath: t.TempDir(),
+		MCP:      false,
+	}
+	args := buildRunArgs(cfg, fakeDind(), "construct-ui-opencode", "testsess", "home-vol", "", "")
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "CONSTRUCT_MCP") {
+			t.Errorf("unexpected CONSTRUCT_MCP env var in args when MCP=false; got: %v", args)
+		}
+	}
+}
+
+// TestBuildRunArgs_MCPEnvVar_AbsentOnGoStack confirms that stack choice does
+// not override the MCP flag — no CONSTRUCT_MCP when MCP=false regardless of stack.
+func TestBuildRunArgs_MCPEnvVar_AbsentOnGoStack(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		Stack:    "go",
+		RepoPath: t.TempDir(),
+		MCP:      false,
+	}
+	args := buildRunArgs(cfg, fakeDind(), "construct-go-opencode", "testsess", "home-vol", "", "")
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "CONSTRUCT_MCP") {
+			t.Errorf("unexpected CONSTRUCT_MCP env var when MCP=false on go stack; got: %v", args)
+		}
+	}
+}
+
+// TestGeneratedEntrypoint_ContainsMCPBlock verifies the entrypoint includes
+// the CONSTRUCT_MCP conditional block that writes opencode.json.
+func TestGeneratedEntrypoint_ContainsMCPBlock(t *testing.T) {
+	script := generatedEntrypoint()
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"checks CONSTRUCT_MCP env var", "CONSTRUCT_MCP"},
+		{"creates opencode config dir", "mkdir -p"},
+		{"writes opencode.json", "opencode.json"},
+		{"includes playwright mcp command", "@playwright/mcp"},
+		{"still exports secrets", "/run/secrets"},
+		{"ends with exec", `exec "$@"`},
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c.snippet) {
+			t.Errorf("entrypoint: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+// TestGeneratedEntrypoint_MCPBlockBeforeExec verifies the MCP config block
+// appears before the final exec line.
+func TestGeneratedEntrypoint_MCPBlockBeforeExec(t *testing.T) {
+	script := generatedEntrypoint()
+	mcpIdx := strings.Index(script, "CONSTRUCT_MCP")
+	execIdx := strings.LastIndex(script, `exec "$@"`)
+	if mcpIdx == -1 {
+		t.Fatal("CONSTRUCT_MCP block not found in entrypoint")
+	}
+	if execIdx == -1 {
+		t.Fatal(`exec "$@" not found in entrypoint`)
+	}
+	if mcpIdx > execIdx {
+		t.Error("MCP block appears after exec line; it must come before")
+	}
+}
+
+// TestGeneratedEntrypoint_DeletesMCPConfigWhenDisabled verifies that the
+// entrypoint removes opencode.json when CONSTRUCT_MCP is not set, so that a
+// persistent home volume does not retain a stale MCP config from a previous
+// run that used --mcp.
+func TestGeneratedEntrypoint_DeletesMCPConfigWhenDisabled(t *testing.T) {
+	script := generatedEntrypoint()
+	// The else branch must be present with an rm -f of opencode.json.
+	if !strings.Contains(script, "rm -f") {
+		t.Error("entrypoint: expected 'rm -f' in else branch to remove stale MCP config")
+	}
+	if !strings.Contains(script, "rm -f \"${HOME}/.config/opencode/opencode.json\"") {
+		t.Error("entrypoint: expected rm -f to target opencode.json specifically")
+	}
+	// The else must follow the fi-less MCP write block, not be a standalone statement.
+	elseIdx := strings.Index(script, "\nelse\n")
+	if elseIdx == -1 {
+		t.Error("entrypoint: expected 'else' branch in MCP conditional")
+	}
+}
+
+// containsPair reports whether slice contains the two consecutive values a, b.
+func containsPair(slice []string, a, b string) bool {
+	for i := 0; i+1 < len(slice); i++ {
+		if slice[i] == a && slice[i+1] == b {
+			return true
+		}
+	}
+	return false
 }

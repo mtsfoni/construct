@@ -3,18 +3,26 @@
 ## Problem
 
 The agent needs browser automation capabilities when running on the `ui` stack.
+`@playwright/mcp` must be installed in the image **and** the MCP server must be
+registered with opencode before it can be used.
 
 ## Solution
 
-Seed an `opencode.json` config into the agent's home volume that registers
-`@playwright/mcp` as an MCP server. OpenCode starts the MCP server on demand
-and exposes Playwright tools directly as MCP tool calls.
+Separate installation from activation:
+
+- The `ui` stack image installs `@playwright/mcp` and Chromium at build time.
+- Passing `--mcp` on the CLI causes the entrypoint script to write
+  `~/.config/opencode/opencode.json` at container startup, registering the MCP
+  server with opencode.
+
+See [`docs/spec/mcp-flag.md`](mcp-flag.md) for the full specification of the
+`--mcp` flag.
 
 ## Behaviour
 
 ### ui stack image
 
-`construct --tool opencode --stack ui .`
+`construct --tool opencode --stack ui --mcp .`
 
 Produces a `construct-ui` Docker image that extends `construct-node` with:
 
@@ -22,26 +30,30 @@ Produces a `construct-ui` Docker image that extends `construct-node` with:
 - Chromium installed to `/ms-playwright` (fixed path, world-readable).
 - `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` baked in.
 
-### Config seeding
+### Config activation
 
-On first launch with a new home volume, `ensureHomeVolume` writes
-`.config/opencode/opencode.json` into `/home/agent/`:
+When `--mcp` is passed, the entrypoint script writes
+`~/.config/opencode/opencode.json` before the agent starts:
 
 ```json
 {
   "mcp": {
     "playwright": {
       "type": "local",
-      "command": ["npx", "-y", "@playwright/mcp"]
+      "command": ["npx", "-y", "@playwright/mcp", "--browser", "chromium"]
     }
   }
 }
 ```
 
-### Migrating home volumes
+The file is written on every container start, so it is always fresh. No
+`--reset` is needed when the config changes.
 
-`HomeFiles` are written only when a volume is created for the first time. Run
-once with `--reset` to wipe and re-seed the home volume with the new config:
+### Migrating from home-volume-seeded config
+
+Earlier versions seeded `opencode.json` via `HomeFiles` on first home volume
+creation. To remove the stale file from an existing volume, run once with
+`--reset`:
 
 ```bash
 construct --tool opencode --stack ui --reset .
@@ -52,4 +64,6 @@ construct --tool opencode --stack ui --reset .
 | File | Change |
 |---|---|
 | `internal/stacks/dockerfiles/ui/Dockerfile` | Install `@playwright/mcp` globally; install Chromium to fixed path |
-| `internal/tools/opencode.go` | Seed `.config/opencode/opencode.json` with MCP server config |
+| `internal/tools/opencode.go` | Remove `HomeFiles` — MCP config written by entrypoint, not home volume seeding |
+| `internal/runner/runner.go` | Inject `CONSTRUCT_MCP=1`; extend entrypoint to write config when set |
+| `cmd/construct/main.go` | `--mcp` flag controls activation |

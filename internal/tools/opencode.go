@@ -21,19 +21,8 @@ func init() {
 		// GitHub OAuth tokens survive --reset and are shared across all repos, so the
 		// user only needs to authenticate once per machine.
 		AuthVolumePath: "/home/agent/.local/share/opencode",
-		// Seed an opencode config that registers @playwright/mcp as an MCP server.
-		// The MCP server is started on demand by opencode when the agent needs browser
-		// automation and exposes Playwright tools directly as MCP tool calls.
-		HomeFiles: map[string]string{
-			".config/opencode/opencode.json": `{
-  "mcp": {
-    "playwright": {
-      "type": "local",
-      "command": ["npx", "-y", "@playwright/mcp", "--browser", "chromium"]
-    }
-  }
-}
-`,
-		},
+		// MCP server config (@playwright/mcp) is NOT seeded here. It is written at
+		// container startup by the entrypoint script when --mcp is passed, via the
+		// CONSTRUCT_MCP=1 environment variable. See docs/spec/mcp-flag.md.
 	})
 }

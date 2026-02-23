@@ -28,9 +28,11 @@ Produces a `construct-ui` Docker image that extends `construct-node` with:
 - `ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` baked in so every process finds
   the browser without any per-user configuration.
 
-On first launch the agent's home volume is seeded with
-`.config/opencode/opencode.json` which registers `@playwright/mcp` as an MCP
-server. OpenCode starts it on demand when the agent needs browser automation.
+Passing `--mcp` causes the entrypoint script to write
+`~/.config/opencode/opencode.json` at container startup, registering
+`@playwright/mcp` as an MCP server. OpenCode starts it on demand when the
+agent needs browser automation. Without `--mcp` no MCP config is written and
+the installed package remains dormant.
 
 ## Dependency chain
 
@@ -47,7 +49,9 @@ When building `ui`, both `construct-base` and `construct-node` are built first
 | `internal/stacks/dockerfiles/ui/Dockerfile` | New — extends `construct-node`; installs `@playwright/mcp` globally and Chromium to `/ms-playwright` |
 | `internal/stacks/stacks.go` | Added `"ui"` to `validStacks`; added `stackDeps` map; updated `EnsureBuilt` to resolve multi-level deps |
 | `internal/stacks/stacks_test.go` | New — unit tests for `IsValid`, `All`, `ImageName`, `EnsureBuilt` error message, `stackDeps`, and embedded Dockerfile content |
-| `internal/tools/opencode.go` | Seeds `.config/opencode/opencode.json` with MCP server config via `HomeFiles` |
+| `internal/tools/opencode.go` | Remove `HomeFiles` — MCP config written by entrypoint when `--mcp` is passed |
+| `internal/runner/runner.go` | Inject `CONSTRUCT_MCP=1`; extend entrypoint to write config when set |
+| `cmd/construct/main.go` | Add `--mcp` flag |
 
 ## Non-goals
 

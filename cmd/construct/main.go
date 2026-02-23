@@ -39,9 +39,10 @@ func runAgent(args []string) {
 	rebuild := fs.Bool("rebuild", false, "Force rebuild of the stack and tool images")
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
+	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
@@ -104,6 +105,7 @@ func runAgent(args []string) {
 		Rebuild:  *rebuild,
 		Debug:    *debug,
 		Reset:    *reset,
+		MCP:      *mcp,
 	}); err != nil {
 		log.Fatal(err)
 	}
