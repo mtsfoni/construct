@@ -40,18 +40,6 @@ server. OpenCode starts it on demand when the agent needs browser automation.
 When building `ui`, both `construct-base` and `construct-node` are built first
 (if not already cached).
 
-## Agent instructions
-
-`.construct/instructions.md` (in this repository) guides the agent on the
-visual iteration workflow:
-
-1. Start the dev server as a background process.
-2. Use Playwright MCP tools to navigate and screenshot.
-3. Screenshot immediately after writing or modifying a component.
-4. Iterate visually until the component looks correct.
-5. Generate Playwright tests from the verified working state.
-6. Run the tests headlessly inside the container.
-
 ## Implementation
 
 | File | Change |

@@ -189,9 +189,6 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, a
 		args = append(args, "-e", k+"="+v)
 	}
 
-	// Mount instruction files when present.
-	args = append(args, instructionMounts(cfg.RepoPath, cfg.Tool.Name)...)
-
 	args = append(args, image)
 	if cfg.Debug {
 		args = append(args, "/bin/bash")
@@ -199,28 +196,6 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, a
 		args = append(args, cfg.Tool.RunCmd...)
 	}
 	return args
-}
-
-// instructionMounts returns -v flags for any relevant instruction files found in the repo.
-func instructionMounts(repoPath, toolName string) []string {
-	var mounts []string
-
-	copilotInstructions := filepath.Join(repoPath, ".github", "copilot-instructions.md")
-	if _, err := os.Stat(copilotInstructions); err == nil {
-		mounts = append(mounts, "-v", copilotInstructions+":/workspace/.github/copilot-instructions.md:ro,z")
-	}
-
-	constructInstructions := filepath.Join(repoPath, ".construct", "instructions.md")
-	if _, err := os.Stat(constructInstructions); err == nil {
-		switch toolName {
-		case "copilot":
-			mounts = append(mounts, "-v", constructInstructions+":/workspace/.github/copilot-instructions.md:ro,z")
-		case "opencode":
-			mounts = append(mounts, "-v", constructInstructions+":/workspace/.opencode/instructions.md:ro,z")
-		}
-	}
-
-	return mounts
 }
 
 // buildToolImage creates a derived Docker image that installs the tool on top of the stack image.

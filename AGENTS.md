@@ -51,12 +51,10 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 
 **Adding a new stack** — add a `Dockerfile` under `internal/stacks/dockerfiles/<name>/` and add the name to `validStacks` in `stacks.go`. The `//go:embed dockerfiles` directive picks it up automatically.
 
-**Instruction file mounting** — `runner.instructionMounts` checks for `.github/copilot-instructions.md` and `.construct/instructions.md` in the repo and bind-mounts them read-only into the container. `.construct/instructions.md` takes precedence over `.github/copilot-instructions.md` for both tools.
-
 **Env file precedence** — `~/.construct/.env` is loaded first; `.construct/.env` in the repo root overrides it. Both files are parsed by the same `mergeEnvFile` function that strips surrounding quotes (single or double) from values.
 
 **Home volume persistence** — the agent's `/home/agent` is a named Docker volume (`construct-home-<tool>-<8-byte-hex>`). It survives container restarts, preserving shell history, tool caches, and any seeded config files defined in `Tool.HomeFiles`. The volume is only initialised once; `--rebuild` does not reset it.
 
 **No external Go dependencies** — `go.mod` declares no `require` directives. Everything is standard library + `os/exec` shelling out to `docker`.
 
-**SELinux hosts (Fedora, RHEL, etc.)** — all host bind mounts must carry the `:z` relabeling suffix so SELinux grants the container access. This applies to `/workspace`, `/run/secrets`, instruction file mounts, and the home volume seed dir. Named Docker volumes do not need `:z`. If a container silently fails to read a bind-mounted path, a missing `:z` is the first thing to check.
+**SELinux hosts (Fedora, RHEL, etc.)** — all host bind mounts must carry the `:z` relabeling suffix so SELinux grants the container access. This applies to `/workspace`, `/run/secrets`, and the home volume seed dir. Named Docker volumes do not need `:z`. If a container silently fails to read a bind-mounted path, a missing `:z` is the first thing to check.
