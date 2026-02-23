@@ -27,9 +27,11 @@ func networkName(sessionID string) string {
 }
 
 // DockerHost returns the DOCKER_HOST value the agent container should use to
-// reach the dind daemon.
+// reach the dind daemon. The dind container is always reachable via the static
+// network alias "dind" on its session-scoped bridge network, so this value is
+// the same regardless of the session ID.
 func (i *Instance) DockerHost() string {
-	return "tcp://" + i.ContainerName + ":2375"
+	return "tcp://dind:2375"
 }
 
 // Start creates a Docker network and launches a privileged dind container
@@ -44,14 +46,11 @@ func Start(sessionID string) (*Instance, error) {
 	}
 
 	// Start the dind container with TLS disabled (port 2375, localhost-scoped).
-	args := []string{
-		"run", "-d",
-		"--name", ctrName,
-		"--network", netName,
-		"--privileged",
-		"-e", "DOCKER_TLS_CERTDIR=",
-		"docker:dind",
-	}
+	// --network-alias dind gives the container a stable, session-independent
+	// hostname on the bridge network so the agent can always use DOCKER_HOST=tcp://dind:2375.
+	// The alias is scoped to this session's isolated network, so concurrent
+	// construct instances each have their own "dind" that doesn't conflict.
+	args := buildStartArgs(sessionID, ctrName, netName)
 	if out, err := run("docker", args...); err != nil {
 		// Best-effort cleanup of the network we just created.
 		run("docker", "network", "rm", netName) //nolint:errcheck
@@ -100,6 +99,21 @@ func (i *Instance) waitReady() error {
 		}
 	}
 	return fmt.Errorf("dind daemon in %s did not become ready after %d seconds", i.ContainerName, maxAttempts)
+}
+
+// buildStartArgs returns the "docker run" argument slice for the dind sidecar.
+// It is a separate function so tests can assert on the arguments without
+// executing Docker.
+func buildStartArgs(sessionID, ctrName, netName string) []string {
+	return []string{
+		"run", "-d",
+		"--name", ctrName,
+		"--network", netName,
+		"--network-alias", "dind",
+		"--privileged",
+		"-e", "DOCKER_TLS_CERTDIR=",
+		"docker:dind",
+	}
 }
 
 // run executes a command and returns its combined output and any error.

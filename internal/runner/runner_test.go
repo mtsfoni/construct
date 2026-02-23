@@ -104,6 +104,19 @@ func fakeConfig(t *testing.T, authKeys []string) *Config {
 	}
 }
 
+func TestBuildRunArgs_DockerHostUsesStaticDindAlias(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	want := "DOCKER_HOST=tcp://dind:2375"
+	for i, arg := range args {
+		if arg == "-e" && i+1 < len(args) && args[i+1] == want {
+			return
+		}
+	}
+	t.Errorf("expected -e %s in args, got: %v", want, args)
+}
+
 func TestBuildRunArgs_UsesSecretNotEnv(t *testing.T) {
 	secretsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(secretsDir, "MY_TOKEN"), []byte("s3cr3t"), 0o600); err != nil {
