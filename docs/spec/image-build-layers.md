@@ -1,0 +1,117 @@
+# Spec: Image build layers
+
+## Overview
+
+Every agent container is built from **two distinct Docker image layers**: a
+**stack layer** and a **tool layer**. Understanding the split helps reason about
+what is cached, what is rebuilt on `--rebuild`, and where new behaviour should
+be added.
+
+## Layer 1 — Stack image (`construct-<stack>`)
+
+**Purpose:** provide the language runtime and any heavyweight system-level
+dependencies that are independent of the AI tool being run.
+
+**Built by:** `internal/stacks/stacks.go` — `EnsureBuilt` reads the embedded
+Dockerfile from `internal/stacks/dockerfiles/<stack>/Dockerfile` and runs
+`docker build -t construct-<stack>`.
+
+**Contents:**
+
+| Stack image | Based on | Adds |
+|---|---|---|
+| `construct-base` | `ubuntu:22.04` | curl, git, ca-certs, Node.js 20, Python 3 + pip + venv, Docker CLI + buildx, `agent` user |
+| `construct-go` | `construct-base` | Go 1.24 at `/usr/local/go` |
+| `construct-dotnet` | `construct-base` | .NET 10 SDK |
+| `construct-ui` | `construct-base` | `@playwright/mcp` (global), Chromium at `/ms-playwright` |
+
+**Dependency chain** — `stackDeps` in `stacks.go` ensures parents are built
+before children:
+
+```
+construct-base
+  └─ construct-ui
+  └─ construct-go
+  └─ construct-dotnet
+```
+
+**What stack images do NOT contain:**
+- No AI tool binary.
+- No `ENTRYPOINT`.
+- No secrets handling.
+- No MCP configuration.
+
+## Layer 2 — Tool image (`construct-<stack>-<tool>`)
+
+**Purpose:** install the AI tool binary on top of a stack image, and add the
+entrypoint script that handles runtime concerns at container start.
+
+**Built by:** `internal/runner/runner.go` — `buildToolImage` generates a
+Dockerfile in a temp directory and runs `docker build -t construct-<stack>-<tool>`.
+
+**Generated Dockerfile structure:**
+
+```dockerfile
+FROM construct-<stack>
+USER root
+RUN <tool.InstallCmds>          # e.g. npm install -g opencode-ai
+COPY construct-entrypoint.sh /usr/local/bin/construct-entrypoint
+RUN chmod +x /usr/local/bin/construct-entrypoint
+USER agent
+ENTRYPOINT ["/usr/local/bin/construct-entrypoint"]
+```
+
+**Entrypoint script** (`construct-entrypoint.sh`) is generated in Go by
+`generatedEntrypoint()` (`internal/runner/runner.go`) and written into the same
+temp build context. It runs three tasks on every container start before handing
+off to the tool:
+
+1. **Secrets** — exports every file under `/run/secrets/` as an environment
+   variable (credentials injected via bind-mount).
+2. **MCP config** — if `CONSTRUCT_MCP=1` (set when `--mcp` is passed): writes
+   `~/.config/opencode/opencode.json` with the playwright MCP server entry.
+   Otherwise deletes the file, preventing stale config from persisting across
+   runs on the same home volume.
+3. **Exec** — hands off to the tool command (`exec "$@"`).
+
+## Naming convention
+
+```
+construct-<stack>               stack image
+construct-<stack>-<tool>        tool image
+```
+
+Examples: `construct-node-copilot`, `construct-ui-opencode`,
+`construct-go-opencode`.
+
+## What belongs in each layer
+
+| Concern | Layer |
+|---|---|
+| Language runtime (Go, Python, .NET, Node.js) | Stack |
+| System packages needed by the language | Stack |
+| Heavy pre-installed dependencies (Chromium, @playwright/mcp) | Stack |
+| AI tool binary (`npm install -g opencode-ai`) | Tool |
+| Entrypoint / secrets handling | Tool |
+| MCP config write/delete logic | Tool (entrypoint) |
+| `DOCKER_HOST` env var (runtime, not baked in) | Container run args |
+| Workspace bind-mount | Container run args |
+| Auth credentials | Container run args (secrets bind-mount) |
+
+## Rebuild behaviour
+
+`--rebuild` causes `buildToolImage` (and `EnsureBuilt` for the stack) to run
+`docker build` again, re-executing `tool.InstallCmds` and regenerating the
+entrypoint. The **home volume** is not touched by `--rebuild`; use `--reset` to
+wipe it.
+
+## Files
+
+| File | Role |
+|---|---|
+| `internal/stacks/dockerfiles/*/Dockerfile` | Static stack Dockerfiles (embedded via `//go:embed`) |
+| `internal/stacks/stacks.go` | `EnsureBuilt`, `stackDeps`, `validStacks`, `ImageName` |
+| `internal/runner/runner.go` | `buildToolImage`, `generatedEntrypoint`, `buildRunArgs` |
+| `internal/tools/tools.go` | `Tool` struct — `InstallCmds`, `RunCmd`, `AuthEnv`, `HomeFiles` |
+| `internal/tools/opencode.go` | Opencode tool registration |
+| `internal/tools/copilot.go` | Copilot tool registration |

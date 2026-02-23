@@ -13,12 +13,12 @@ import (
 var dockerfiles embed.FS
 
 // validStacks is the ordered list of supported stack names.
-var validStacks = []string{"base", "node", "dotnet", "python", "go", "ui"}
+var validStacks = []string{"base", "dotnet", "go", "ui"}
 
 // stackDeps maps a stack name to the ordered list of prerequisite stack images
 // that must be present before that stack can be built.
 var stackDeps = map[string][]string{
-	"ui": {"base", "node"},
+	"ui": {"base"},
 }
 
 // ImageName returns the Docker image name for a given stack.

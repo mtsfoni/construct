@@ -15,6 +15,18 @@ import (
 	"github.com/mtsfoni/construct/internal/tools"
 )
 
+// portFlag is a repeatable --port flag value. Each call to Set appends one
+// "host:container" (or bare "port") mapping, allowing:
+//
+//	construct --port 3000 --port 8080:8080 ...
+type portFlag []string
+
+func (p *portFlag) String() string { return strings.Join(*p, ", ") }
+func (p *portFlag) Set(v string) error {
+	*p = append(*p, v)
+	return nil
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		runConfig(os.Args[2:])
@@ -40,9 +52,11 @@ func runAgent(args []string) {
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
 	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
+	var ports portFlag
+	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
@@ -56,8 +70,9 @@ func runAgent(args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack dotnet /path/to/repo\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack node .\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack python ~/projects/myapp\n\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack base .\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack go ~/projects/myapp\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack ui --mcp --port 3000 --port 8080 .\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -106,6 +121,7 @@ func runAgent(args []string) {
 		Debug:    *debug,
 		Reset:    *reset,
 		MCP:      *mcp,
+		Ports:    []string(ports),
 	}); err != nil {
 		log.Fatal(err)
 	}

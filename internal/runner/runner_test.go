@@ -7,11 +7,79 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mtsfoni/construct/internal/dind"
 	"github.com/mtsfoni/construct/internal/tools"
 )
+
+// TestMain builds the shared entrypoint test image once before all tests run
+// and removes it after the suite finishes. This avoids each test building and
+// immediately cleaning up the same image, which would leave later tests in the
+// same run unable to use it.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	// Best-effort cleanup of the shared entrypoint image; ignore errors.
+	exec.Command("docker", "rmi", "-f", entrypointTestImageName).Run() //nolint:errcheck
+	os.Exit(code)
+}
+
+// entrypointTestImageName is the tag used for the shared entrypoint test image.
+const entrypointTestImageName = "construct-entrypoint-test-ports"
+
+// entrypointImageOnce ensures the image is built at most once per test binary run.
+var (
+	entrypointImageOnce  sync.Once
+	entrypointImageBuilt bool
+)
+
+// buildEntrypointTestImage builds (at most once) a minimal Docker image
+// containing the generated entrypoint script and returns true on success.
+// Callers should t.Skip when it returns false.
+func buildEntrypointTestImage(t *testing.T) bool {
+	t.Helper()
+	if !dockerAvailable() {
+		return false
+	}
+	entrypointImageOnce.Do(func() {
+		buildDir, err := os.MkdirTemp("", "construct-ep-build-*")
+		if err != nil {
+			return
+		}
+		defer os.RemoveAll(buildDir)
+
+		ep := generatedEntrypoint()
+		if err := os.WriteFile(filepath.Join(buildDir, "construct-entrypoint.sh"), []byte(ep), 0o755); err != nil {
+			return
+		}
+		df := "FROM ubuntu:22.04\nCOPY construct-entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\n"
+		if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte(df), 0o644); err != nil {
+			return
+		}
+		if out, err := exec.Command("docker", "build", "-t", entrypointTestImageName, buildDir).CombinedOutput(); err != nil {
+			t.Logf("build entrypoint test image: %v\n%s", err, out)
+			return
+		}
+		entrypointImageBuilt = true
+	})
+	return entrypointImageBuilt
+}
+
+// runEntrypoint runs the entrypoint test image with the provided extra docker
+// run flags and shell command, returning trimmed stdout. It is the container
+// equivalent of "debug mode": no agent is started, just sh.
+func runEntrypoint(t *testing.T, extraFlags []string, shellCmd string) string {
+	t.Helper()
+	args := []string{"run", "--rm", "--entrypoint", "/entrypoint.sh"}
+	args = append(args, extraFlags...)
+	args = append(args, entrypointTestImageName, "sh", "-c", shellCmd)
+	out, err := exec.Command("docker", args...).Output()
+	if err != nil {
+		t.Fatalf("docker run failed: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // fakeDind returns a *dind.Instance with deterministic test values.
 func fakeDind() *dind.Instance {
@@ -294,6 +362,76 @@ func TestEntrypointScript_ExportsSecrets(t *testing.T) {
 	}
 }
 
+// entrypointTestImage builds (once per test binary run) a minimal Docker image
+// that contains the generated entrypoint script and returns its name.
+// The image is cleaned up via t.Cleanup when docker is available.
+//
+// TestEntrypointScript_PortEnvVars_CONSTRUCT verifies that when CONSTRUCT=1 is
+// passed to the container the variable is visible to the process that the
+// entrypoint hands off to.
+func TestEntrypointScript_PortEnvVars_CONSTRUCT(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1"},
+		"echo $CONSTRUCT",
+	)
+	if got != "1" {
+		t.Errorf("CONSTRUCT = %q inside container, want %q", got, "1")
+	}
+}
+
+// TestEntrypointScript_PortEnvVars_CONSTRUCT_PORTS verifies that CONSTRUCT_PORTS
+// is forwarded intact through the entrypoint to the child process.
+func TestEntrypointScript_PortEnvVars_CONSTRUCT_PORTS(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1", "-e", "CONSTRUCT_PORTS=3000"},
+		"echo $CONSTRUCT_PORTS",
+	)
+	if got != "3000" {
+		t.Errorf("CONSTRUCT_PORTS = %q inside container, want %q", got, "3000")
+	}
+}
+
+// TestEntrypointScript_PortEnvVars_MultiplePorts verifies that a comma-separated
+// CONSTRUCT_PORTS value (set by the runner when multiple --port flags are used)
+// is forwarded intact.
+func TestEntrypointScript_PortEnvVars_MultiplePorts(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1", "-e", "CONSTRUCT_PORTS=3000,8080"},
+		"echo $CONSTRUCT_PORTS",
+	)
+	if got != "3000,8080" {
+		t.Errorf("CONSTRUCT_PORTS = %q inside container, want %q", got, "3000,8080")
+	}
+}
+
+// TestEntrypointScript_PortEnvVars_AbsentWhenNotSet verifies that CONSTRUCT and
+// CONSTRUCT_PORTS are empty strings (not set) when the runner does not inject
+// them — i.e. when --port is not used.
+func TestEntrypointScript_PortEnvVars_AbsentWhenNotSet(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+
+	construct := runEntrypoint(t, nil, "echo ${CONSTRUCT:-unset}")
+	if construct != "unset" {
+		t.Errorf("CONSTRUCT = %q inside container, want it unset (no --port given)", construct)
+	}
+
+	ports := runEntrypoint(t, nil, "echo ${CONSTRUCT_PORTS:-unset}")
+	if ports != "unset" {
+		t.Errorf("CONSTRUCT_PORTS = %q inside container, want it unset (no --port given)", ports)
+	}
+}
+
 // dockerAvailable returns true if the Docker CLI and daemon are both usable.
 func dockerAvailable() bool {
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -558,6 +696,101 @@ func TestGeneratedEntrypoint_DeletesMCPConfigWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestGeneratedEntrypoint_ContainsConstructAgentsBlock verifies the entrypoint
+// includes the CONSTRUCT env-var conditional that writes/removes the global
+// ~/.config/opencode/AGENTS.md with port-binding instructions.
+func TestGeneratedEntrypoint_ContainsConstructAgentsBlock(t *testing.T) {
+	script := generatedEntrypoint()
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"checks CONSTRUCT env var", "CONSTRUCT"},
+		{"creates opencode config dir for AGENTS.md", ".config/opencode"},
+		{"writes AGENTS.md", "AGENTS.md"},
+		{"instructs agent to bind to 0.0.0.0", "0.0.0.0"},
+		{"mentions CONSTRUCT_PORTS", "CONSTRUCT_PORTS"},
+		{"removes AGENTS.md when CONSTRUCT is unset", "rm -f"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c.snippet) {
+			t.Errorf("entrypoint: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+// TestGeneratedEntrypoint_ConstructBlockBeforeExec verifies the CONSTRUCT
+// AGENTS.md block appears before the final exec line.
+func TestGeneratedEntrypoint_ConstructBlockBeforeExec(t *testing.T) {
+	script := generatedEntrypoint()
+	// Find the AGENTS.md write line as the anchor for the CONSTRUCT block.
+	agentsMdIdx := strings.Index(script, "AGENTS.md")
+	execIdx := strings.LastIndex(script, `exec "$@"`)
+	if agentsMdIdx == -1 {
+		t.Fatal("AGENTS.md block not found in entrypoint")
+	}
+	if execIdx == -1 {
+		t.Fatal(`exec "$@" not found in entrypoint`)
+	}
+	if agentsMdIdx > execIdx {
+		t.Error("AGENTS.md block appears after exec line; it must come before")
+	}
+}
+
+// TestEntrypointScript_WritesAgentsMD_WhenConstructSet is a container
+// integration test that verifies the entrypoint writes
+// ~/.config/opencode/AGENTS.md when CONSTRUCT=1 and CONSTRUCT_PORTS are set.
+func TestEntrypointScript_WritesAgentsMD_WhenConstructSet(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1", "-e", "CONSTRUCT_PORTS=3000"},
+		"cat ${HOME}/.config/opencode/AGENTS.md",
+	)
+	if got == "" {
+		t.Error("expected ~/.config/opencode/AGENTS.md to be non-empty when CONSTRUCT=1")
+	}
+	// The file must mention 0.0.0.0 so the agent knows to bind to all interfaces.
+	if !strings.Contains(got, "0.0.0.0") {
+		t.Errorf("AGENTS.md does not mention 0.0.0.0; got:\n%s", got)
+	}
+	// The file must mention CONSTRUCT_PORTS so the agent knows the port var name.
+	if !strings.Contains(got, "CONSTRUCT_PORTS") {
+		t.Errorf("AGENTS.md does not mention CONSTRUCT_PORTS; got:\n%s", got)
+	}
+}
+
+// TestEntrypointScript_AgentsMD_AbsentWhenConstructUnset verifies the entrypoint
+// does NOT write ~/.config/opencode/AGENTS.md when CONSTRUCT is not set.
+func TestEntrypointScript_AgentsMD_AbsentWhenConstructUnset(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		nil,
+		"test -f ${HOME}/.config/opencode/AGENTS.md && echo present || echo absent",
+	)
+	if got != "absent" {
+		t.Errorf("expected ~/.config/opencode/AGENTS.md to be absent when CONSTRUCT is unset; got %q", got)
+	}
+}
+
+// TestEntrypointScript_AgentsMD_IncludesPortValue verifies that the AGENTS.md
+// written by the entrypoint contains the actual port value from CONSTRUCT_PORTS.
+func TestEntrypointScript_AgentsMD_IncludesPortValue(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1", "-e", "CONSTRUCT_PORTS=9000"},
+		"cat ${HOME}/.config/opencode/AGENTS.md",
+	)
+	if !strings.Contains(got, "9000") {
+		t.Errorf("AGENTS.md does not contain the port value 9000; got:\n%s", got)
+	}
+}
+
 // containsPair reports whether slice contains the two consecutive values a, b.
 func containsPair(slice []string, a, b string) bool {
 	for i := 0; i+1 < len(slice); i++ {
@@ -566,4 +799,101 @@ func containsPair(slice []string, a, b string) bool {
 		}
 	}
 	return false
+}
+
+// TestBuildRunArgs_Ports_SingleBarePort verifies that a bare port number is
+// published as -p and that CONSTRUCT=1 / CONSTRUCT_PORTS are injected.
+func TestBuildRunArgs_Ports_SingleBarePort(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		RepoPath: t.TempDir(),
+		Ports:    []string{"3000"},
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	if !containsPair(args, "-p", "3000") {
+		t.Errorf("expected -p 3000 in args; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT=1") {
+		t.Errorf("expected -e CONSTRUCT=1 in args; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_PORTS=3000") {
+		t.Errorf("expected -e CONSTRUCT_PORTS=3000 in args; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_Ports_ColonMapping verifies that "host:container" format is
+// passed through verbatim to -p and that CONSTRUCT_PORTS carries only the
+// container-side port.
+func TestBuildRunArgs_Ports_ColonMapping(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		RepoPath: t.TempDir(),
+		Ports:    []string{"9000:3000"},
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	if !containsPair(args, "-p", "9000:3000") {
+		t.Errorf("expected -p 9000:3000 in args; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_PORTS=3000") {
+		t.Errorf("expected CONSTRUCT_PORTS to hold container-side port 3000; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_Ports_Multiple verifies that multiple --port values each
+// produce a -p flag and that CONSTRUCT_PORTS lists all container-side ports.
+func TestBuildRunArgs_Ports_Multiple(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		RepoPath: t.TempDir(),
+		Ports:    []string{"3000", "8080:8080"},
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	if !containsPair(args, "-p", "3000") {
+		t.Errorf("expected -p 3000 in args; got: %v", args)
+	}
+	if !containsPair(args, "-p", "8080:8080") {
+		t.Errorf("expected -p 8080:8080 in args; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_PORTS=3000,8080") {
+		t.Errorf("expected -e CONSTRUCT_PORTS=3000,8080 in args; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_Ports_ThreePartMapping verifies that a full
+// "ip:host:container" format yields the container-side port in CONSTRUCT_PORTS.
+func TestBuildRunArgs_Ports_ThreePartMapping(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		RepoPath: t.TempDir(),
+		Ports:    []string{"127.0.0.1:3000:3000"},
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	if !containsPair(args, "-p", "127.0.0.1:3000:3000") {
+		t.Errorf("expected -p 127.0.0.1:3000:3000 in args; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_PORTS=3000") {
+		t.Errorf("expected CONSTRUCT_PORTS=3000 for three-part mapping; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_Ports_AbsentWhenEmpty verifies that CONSTRUCT=1 and
+// CONSTRUCT_PORTS are NOT injected when no ports are requested.
+func TestBuildRunArgs_Ports_AbsentWhenEmpty(t *testing.T) {
+	cfg := &Config{
+		Tool:     fakeConfig(t, nil).Tool,
+		RepoPath: t.TempDir(),
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "CONSTRUCT=") {
+		t.Errorf("CONSTRUCT env var should be absent when no ports set; got: %v", args)
+	}
+	if strings.Contains(joined, "CONSTRUCT_PORTS") {
+		t.Errorf("CONSTRUCT_PORTS should be absent when no ports set; got: %v", args)
+	}
 }

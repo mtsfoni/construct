@@ -1,4 +1,4 @@
-FROM construct-node
+FROM construct-base
 
 USER root
 

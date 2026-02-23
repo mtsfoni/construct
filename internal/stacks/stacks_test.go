@@ -6,10 +6,19 @@ import (
 )
 
 func TestIsValid_KnownStacks(t *testing.T) {
-	known := []string{"base", "node", "dotnet", "python", "go", "ui"}
+	known := []string{"base", "dotnet", "go", "ui"}
 	for _, s := range known {
 		if !IsValid(s) {
 			t.Errorf("IsValid(%q) = false, want true", s)
+		}
+	}
+}
+
+func TestIsValid_RemovedStacks(t *testing.T) {
+	removed := []string{"node", "python"}
+	for _, s := range removed {
+		if IsValid(s) {
+			t.Errorf("IsValid(%q) = true, want false (stack was merged into base)", s)
 		}
 	}
 }
@@ -36,7 +45,7 @@ func TestImageName(t *testing.T) {
 		want  string
 	}{
 		{"base", "construct-base"},
-		{"node", "construct-node"},
+		{"go", "construct-go"},
 		{"ui", "construct-ui"},
 	}
 	for _, c := range cases {
@@ -62,20 +71,36 @@ func TestEnsureBuilt_UnknownStackError(t *testing.T) {
 	}
 }
 
-func TestStackDeps_UIHasNodeAndBase(t *testing.T) {
+func TestStackDeps_UIHasBase(t *testing.T) {
 	deps, ok := stackDeps["ui"]
 	if !ok {
 		t.Fatal("stackDeps[\"ui\"] not set")
 	}
-	want := map[string]bool{"base": true, "node": true}
-	for _, d := range deps {
-		if !want[d] {
-			t.Errorf("unexpected dep %q in stackDeps[\"ui\"]", d)
-		}
-		delete(want, d)
+	if len(deps) != 1 || deps[0] != "base" {
+		t.Errorf("stackDeps[\"ui\"] = %v, want [\"base\"]", deps)
 	}
-	for missing := range want {
-		t.Errorf("expected dep %q in stackDeps[\"ui\"] but it was absent", missing)
+}
+
+func TestEmbeddedDockerfiles_BaseContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/base/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded base Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"includes Node.js install", "nodesource.com/setup_20.x"},
+		{"includes python3", "python3"},
+		{"includes python3-pip", "python3-pip"},
+		{"creates agent user", "useradd"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("base Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
 	}
 }
 
@@ -100,7 +125,7 @@ func TestEmbeddedDockerfiles_UIContent(t *testing.T) {
 		desc    string
 		snippet string
 	}{
-		{"extends construct-node", "FROM construct-node"},
+		{"extends construct-base", "FROM construct-base"},
 		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
 		{"installs Chromium via playwright cli", "playwright install"},
 		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
