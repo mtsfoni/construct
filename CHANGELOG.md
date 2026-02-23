@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] — v0.3.0
+## [v0.3.0] — 2026-02-23
 
 ### Added
 
@@ -13,6 +13,7 @@
 - **`CONSTRUCT=1` env var** — always injected into the agent container so tools can detect they are running inside construct.
 - **`CONSTRUCT_PORTS` env var** — injected when `--port` is used; contains the comma-separated list of container-side port numbers.
 - **`qs` now replays `--mcp` and `--port`** — the quickstart command restores the full previous invocation, not just `--tool` and `--stack`. `~/.construct/last-used.json` now stores `mcp` and `ports` alongside `tool` and `stack`.
+- **`install.sh`** — convenience script that builds the binary from source and installs it to `~/.local/bin/construct`.
 
 ### Changed
 
