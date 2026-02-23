@@ -166,7 +166,7 @@ func TestBuildRunArgs_MissingSecretSkipped(t *testing.T) {
 // returns -1) to avoid passing an invalid --user -1:-1 to Docker.
 func TestBuildRunArgs_UserFlag(t *testing.T) {
 	cfg := fakeConfig(t, nil)
-	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "")
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
 
 	hasUser := false
 	for _, arg := range args {
