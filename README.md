@@ -46,7 +46,7 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [path]
+construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
 construct qs [path]
 ```
@@ -55,8 +55,9 @@ construct qs [path]
 
 ```bash
 construct --tool opencode --stack dotnet /path/to/repo
-construct --tool copilot --stack node .
-construct --tool opencode --stack python ~/projects/myapp
+construct --tool copilot --stack base .
+construct --tool opencode --stack go ~/projects/myapp
+construct --tool opencode --stack ui --mcp --port 3000 .
 ```
 
 ### Flags
@@ -64,21 +65,22 @@ construct --tool opencode --stack python ~/projects/myapp
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
-| `--stack` | `node` | Language stack: `base`, `node`, `dotnet`, `python`, `go`, `ui` |
+| `--stack` | `base` | Language stack: `base`, `dotnet`, `go`, `ui` |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
-| `--reset` | `false` | Wipe and re-seed the agent home volume before starting |
+| `--reset` | `false` | Wipe and re-seed the per-repo agent home volume before starting. Does **not** affect the global auth volume. |
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
 | `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui` for browser automation |
+| `--port` | *(none)* | Publish a container port to the host (repeatable). Accepts any format `docker run -p` supports: `3000`, `9000:3000`, `127.0.0.1:3000:3000`. |
 
 ## Quickstart (`qs`)
 
-After running `construct` at least once in a repo, replay the same tool and stack with:
+After running `construct` at least once in a repo, replay the exact same invocation with:
 
 ```bash
 construct qs [path]
 ```
 
-The last-used tool/stack per repo is stored in `~/.construct/last-used.json`.
+`qs` restores the last `--tool`, `--stack`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
 
 ## Supported tools
 
@@ -91,12 +93,10 @@ The last-used tool/stack per repo is stored in `~/.construct/last-used.json`.
 
 | Stack | Base | Additions |
 |-------|------|-----------|
-| `base` | Ubuntu 22.04, Node 20, Docker CLI, buildx, git | — |
-| `node` | base | — |
+| `base` | Ubuntu 22.04, Node 20, Python 3, Docker CLI, buildx, git | — |
 | `dotnet` | base | .NET 10 SDK |
-| `python` | base | Python 3, pip |
 | `go` | base | Go 1.24 |
-| `ui` | node | `@playwright/mcp`, Chromium |
+| `ui` | base | `@playwright/mcp`, Chromium |
 
 ## Auth / config
 
@@ -125,7 +125,7 @@ a per-repo file, add `.construct/.env` to the repo's `.gitignore`.
 | Tool | Required credential |
 |------|-------------------|
 | `copilot` | `GH_TOKEN` — a GitHub PAT with Copilot access |
-| `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other [supported provider key](https://opencode.ai/docs/providers). Alternatively, run `/connect` inside the opencode TUI to authenticate interactively — credentials are written to the persistent home volume and survive across sessions. |
+| `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other [supported provider key](https://opencode.ai/docs/providers). Alternatively, run `/connect` inside the opencode TUI to authenticate interactively — credentials are written to a **global auth volume** (`construct-auth-opencode`) that persists across repos and survives `--reset`. |
 
 > Credentials are injected into the container via bind-mounted files, not as
 > `docker run -e` flags, so values do not appear in `docker inspect` output.
@@ -137,3 +137,5 @@ The entire repo is bind-mounted at `/workspace`, so any instruction files alread
 
 - `.github/copilot-instructions.md` — picked up by GitHub Copilot
 - `AGENTS.md` — picked up by OpenCode and other tools that follow the Agents convention
+
+construct also injects a global `~/.config/opencode/AGENTS.md` into every session that tells the agent it is running inside a construct container. When `--port` is used, this file also contains server binding rules (bind to `0.0.0.0`, use the published ports) so the agent's dev server is reachable from the host browser.

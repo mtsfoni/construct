@@ -697,24 +697,31 @@ func TestGeneratedEntrypoint_DeletesMCPConfigWhenDisabled(t *testing.T) {
 }
 
 // TestGeneratedEntrypoint_ContainsConstructAgentsBlock verifies the entrypoint
-// includes the CONSTRUCT env-var conditional that writes/removes the global
-// ~/.config/opencode/AGENTS.md with port-binding instructions.
+// always writes ~/.config/opencode/AGENTS.md (CONSTRUCT=1 is always set) and
+// appends port-binding instructions only when CONSTRUCT_PORTS is non-empty.
 func TestGeneratedEntrypoint_ContainsConstructAgentsBlock(t *testing.T) {
 	script := generatedEntrypoint()
 	checks := []struct {
 		desc    string
 		snippet string
 	}{
-		{"checks CONSTRUCT env var", "CONSTRUCT"},
 		{"creates opencode config dir for AGENTS.md", ".config/opencode"},
 		{"writes AGENTS.md", "AGENTS.md"},
 		{"instructs agent to bind to 0.0.0.0", "0.0.0.0"},
 		{"mentions CONSTRUCT_PORTS", "CONSTRUCT_PORTS"},
-		{"removes AGENTS.md when CONSTRUCT is unset", "rm -f"},
+		{"conditionally appends port rules when CONSTRUCT_PORTS set", "if [ -n \"${CONSTRUCT_PORTS}\" ]"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(script, c.snippet) {
 			t.Errorf("entrypoint: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+	// rm -f on AGENTS.md should no longer exist — file is always written.
+	if strings.Contains(script, "rm -f") && strings.Contains(script, "AGENTS.md") {
+		// Only fail if the rm -f and AGENTS.md appear in the same logical block.
+		// Check by looking for the exact old pattern.
+		if strings.Contains(script, "rm -f \"${HOME}/.config/opencode/AGENTS.md\"") {
+			t.Error("entrypoint should not delete AGENTS.md; it must always be written")
 		}
 	}
 }
@@ -737,10 +744,9 @@ func TestGeneratedEntrypoint_ConstructBlockBeforeExec(t *testing.T) {
 	}
 }
 
-// TestEntrypointScript_WritesAgentsMD_WhenConstructSet is a container
-// integration test that verifies the entrypoint writes
-// ~/.config/opencode/AGENTS.md when CONSTRUCT=1 and CONSTRUCT_PORTS are set.
-func TestEntrypointScript_WritesAgentsMD_WhenConstructSet(t *testing.T) {
+// TestEntrypointScript_WritesAgentsMD_WithPortSection verifies that when
+// CONSTRUCT_PORTS is set the entrypoint includes port-binding rules in AGENTS.md.
+func TestEntrypointScript_WritesAgentsMD_WithPortSection(t *testing.T) {
 	if !buildEntrypointTestImage(t) {
 		t.Skip("docker not available or image build failed")
 	}
@@ -749,7 +755,7 @@ func TestEntrypointScript_WritesAgentsMD_WhenConstructSet(t *testing.T) {
 		"cat ${HOME}/.config/opencode/AGENTS.md",
 	)
 	if got == "" {
-		t.Error("expected ~/.config/opencode/AGENTS.md to be non-empty when CONSTRUCT=1")
+		t.Error("expected ~/.config/opencode/AGENTS.md to be non-empty when CONSTRUCT_PORTS is set")
 	}
 	// The file must mention 0.0.0.0 so the agent knows to bind to all interfaces.
 	if !strings.Contains(got, "0.0.0.0") {
@@ -761,9 +767,9 @@ func TestEntrypointScript_WritesAgentsMD_WhenConstructSet(t *testing.T) {
 	}
 }
 
-// TestEntrypointScript_AgentsMD_AbsentWhenConstructUnset verifies the entrypoint
-// does NOT write ~/.config/opencode/AGENTS.md when CONSTRUCT is not set.
-func TestEntrypointScript_AgentsMD_AbsentWhenConstructUnset(t *testing.T) {
+// TestEntrypointScript_AgentsMD_AlwaysPresent verifies the entrypoint always
+// writes ~/.config/opencode/AGENTS.md, even when no ports are configured.
+func TestEntrypointScript_AgentsMD_AlwaysPresent(t *testing.T) {
 	if !buildEntrypointTestImage(t) {
 		t.Skip("docker not available or image build failed")
 	}
@@ -771,8 +777,23 @@ func TestEntrypointScript_AgentsMD_AbsentWhenConstructUnset(t *testing.T) {
 		nil,
 		"test -f ${HOME}/.config/opencode/AGENTS.md && echo present || echo absent",
 	)
-	if got != "absent" {
-		t.Errorf("expected ~/.config/opencode/AGENTS.md to be absent when CONSTRUCT is unset; got %q", got)
+	if got != "present" {
+		t.Errorf("expected ~/.config/opencode/AGENTS.md to always be present; got %q", got)
+	}
+}
+
+// TestEntrypointScript_AgentsMD_NoPortSection verifies that without
+// CONSTRUCT_PORTS the AGENTS.md does not contain port-binding rules.
+func TestEntrypointScript_AgentsMD_NoPortSection(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	got := runEntrypoint(t,
+		nil,
+		"cat ${HOME}/.config/opencode/AGENTS.md",
+	)
+	if strings.Contains(got, "0.0.0.0") {
+		t.Errorf("AGENTS.md should not contain port-binding rules when no ports set; got:\n%s", got)
 	}
 }
 
@@ -802,7 +823,8 @@ func containsPair(slice []string, a, b string) bool {
 }
 
 // TestBuildRunArgs_Ports_SingleBarePort verifies that a bare port number is
-// published as -p and that CONSTRUCT=1 / CONSTRUCT_PORTS are injected.
+// expanded to "N:N" so host and container use the same port, and that
+// CONSTRUCT=1 / CONSTRUCT_PORTS are injected.
 func TestBuildRunArgs_Ports_SingleBarePort(t *testing.T) {
 	cfg := &Config{
 		Tool:     fakeConfig(t, nil).Tool,
@@ -811,8 +833,22 @@ func TestBuildRunArgs_Ports_SingleBarePort(t *testing.T) {
 	}
 	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
 
-	if !containsPair(args, "-p", "3000") {
-		t.Errorf("expected -p 3000 in args; got: %v", args)
+	// Bare "3000" must be expanded to "3000:3000" so the host port matches.
+	if !containsPair(args, "-p", "3000:3000") {
+		t.Errorf("expected -p 3000:3000 (bare port expanded) in args; got: %v", args)
+	}
+	if containsPair(args, "-p", "3000") {
+		// "3000" without a colon is the unexpanded form — it must not appear.
+		found := false
+		for i, a := range args {
+			if a == "-p" && i+1 < len(args) && args[i+1] == "3000" {
+				found = true
+				break
+			}
+		}
+		if found {
+			t.Errorf("unexpected unexpanded -p 3000 in args (should be 3000:3000); got: %v", args)
+		}
 	}
 	if !containsPair(args, "-e", "CONSTRUCT=1") {
 		t.Errorf("expected -e CONSTRUCT=1 in args; got: %v", args)
@@ -843,6 +879,7 @@ func TestBuildRunArgs_Ports_ColonMapping(t *testing.T) {
 
 // TestBuildRunArgs_Ports_Multiple verifies that multiple --port values each
 // produce a -p flag and that CONSTRUCT_PORTS lists all container-side ports.
+// Bare port numbers are expanded to "N:N".
 func TestBuildRunArgs_Ports_Multiple(t *testing.T) {
 	cfg := &Config{
 		Tool:     fakeConfig(t, nil).Tool,
@@ -851,8 +888,9 @@ func TestBuildRunArgs_Ports_Multiple(t *testing.T) {
 	}
 	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
 
-	if !containsPair(args, "-p", "3000") {
-		t.Errorf("expected -p 3000 in args; got: %v", args)
+	// "3000" (bare) must be expanded to "3000:3000".
+	if !containsPair(args, "-p", "3000:3000") {
+		t.Errorf("expected -p 3000:3000 (bare port expanded) in args; got: %v", args)
 	}
 	if !containsPair(args, "-p", "8080:8080") {
 		t.Errorf("expected -p 8080:8080 in args; got: %v", args)
@@ -880,8 +918,8 @@ func TestBuildRunArgs_Ports_ThreePartMapping(t *testing.T) {
 	}
 }
 
-// TestBuildRunArgs_Ports_AbsentWhenEmpty verifies that CONSTRUCT=1 and
-// CONSTRUCT_PORTS are NOT injected when no ports are requested.
+// TestBuildRunArgs_Ports_AbsentWhenEmpty verifies that CONSTRUCT_PORTS is NOT
+// injected when no ports are requested. CONSTRUCT=1 is always present.
 func TestBuildRunArgs_Ports_AbsentWhenEmpty(t *testing.T) {
 	cfg := &Config{
 		Tool:     fakeConfig(t, nil).Tool,
@@ -890,8 +928,9 @@ func TestBuildRunArgs_Ports_AbsentWhenEmpty(t *testing.T) {
 	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
 	joined := strings.Join(args, " ")
 
-	if strings.Contains(joined, "CONSTRUCT=") {
-		t.Errorf("CONSTRUCT env var should be absent when no ports set; got: %v", args)
+	// CONSTRUCT=1 is always injected so the agent knows it is inside construct.
+	if !containsPair(args, "-e", "CONSTRUCT=1") {
+		t.Errorf("CONSTRUCT=1 should always be present; got: %v", args)
 	}
 	if strings.Contains(joined, "CONSTRUCT_PORTS") {
 		t.Errorf("CONSTRUCT_PORTS should be absent when no ports set; got: %v", args)

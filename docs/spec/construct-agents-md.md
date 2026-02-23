@@ -2,37 +2,43 @@
 
 ## Problem
 
-When `--port` is used, construct injects `CONSTRUCT=1` and `CONSTRUCT_PORTS` into
-the container so the agent knows port forwarding is active. But without additional
-context the agent has no instructions telling it to:
-
-- Bind servers to `0.0.0.0` (not `127.0.0.1` / `localhost`)
-- Use the specific port numbers in `CONSTRUCT_PORTS`
-- Print a ready message so the user knows to open their browser
-
-The result is that agents typically start dev servers on `127.0.0.1:PORT`, which
-is unreachable from the host even though the port is published.
+Agents running inside construct have no way of knowing they are in a construct
+container. When `--port` is used they also need to know to bind servers to
+`0.0.0.0` and which ports to use. Without this context agents typically start
+dev servers on `127.0.0.1:PORT`, which is unreachable from the host even
+though the port is published.
 
 ## Solution
 
-The construct entrypoint script writes port-binding instructions to
-`~/.config/opencode/AGENTS.md` at container start when `CONSTRUCT=1` is set.
-Opencode reads this file as **global rules** that apply to every session, giving
-the agent the context it needs without modifying the workspace.
+The construct entrypoint script **always** writes
+`~/.config/opencode/AGENTS.md` at container start. Because `CONSTRUCT=1` is
+always injected by the runner, the file is always present and always tells the
+agent it is inside construct.
 
-When `CONSTRUCT` is not set, the entrypoint deletes the file so a stale copy
-from a previous `--port` session does not linger in the persistent home volume.
+When `--port` is also used, `CONSTRUCT_PORTS` is set and the entrypoint
+appends port-binding rules to the file.
+
+Opencode reads `~/.config/opencode/AGENTS.md` as **global rules** that apply
+to every session, giving the agent the context it needs without modifying the
+workspace.
 
 ## Behaviour
 
-### When `--port` is used (`CONSTRUCT=1`)
+### Always (every construct session)
 
-The entrypoint writes `~/.config/opencode/AGENTS.md` with content like:
+The entrypoint writes `~/.config/opencode/AGENTS.md` with at minimum:
 
 ```markdown
 # Construct container context
 
-You are running inside a construct container with port forwarding enabled.
+You are running inside a construct container.
+```
+
+### When `--port` is used (`CONSTRUCT_PORTS` is set)
+
+The entrypoint appends port-binding rules:
+
+```markdown
 
 ## Server binding rules
 
@@ -45,13 +51,6 @@ You are running inside a construct container with port forwarding enabled.
 
 The `${CONSTRUCT_PORTS}` value is expanded at container start, so the agent
 sees the actual port numbers (e.g. `3000` or `3000,8080`).
-
-### When `--port` is not used (`CONSTRUCT` unset)
-
-The entrypoint runs: `rm -f "${HOME}/.config/opencode/AGENTS.md"`
-
-This ensures the file is always consistent with the current invocation, even
-across sessions that alternate between using and not using `--port`.
 
 ## Why `~/.config/opencode/AGENTS.md`
 
@@ -82,6 +81,7 @@ future iteration, the same instructions could be injected via copilot's
 
 | File | Change |
 |---|---|
-| `internal/runner/runner.go` | `generatedEntrypoint()` now writes/removes `~/.config/opencode/AGENTS.md` based on `CONSTRUCT` env var |
-| `internal/runner/runner_test.go` | 4 new tests: unit tests for entrypoint content, container integration tests for file presence/content/absence |
+| `internal/runner/runner.go` | `CONSTRUCT=1` always injected; `generatedEntrypoint()` always writes `~/.config/opencode/AGENTS.md`, appending port rules only when `CONSTRUCT_PORTS` is set |
+| `internal/runner/runner_test.go` | Tests updated to reflect always-present `CONSTRUCT=1` and always-present `AGENTS.md` |
 | `docs/spec/construct-agents-md.md` | This document |
+

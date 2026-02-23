@@ -204,23 +204,25 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, a
 		args = append(args, "-e", "CONSTRUCT_MCP=1")
 	}
 
-	// Publish ports and advertise them to the agent via env vars.
-	// CONSTRUCT=1 lets the agent know it is running inside construct.
-	// CONSTRUCT_PORTS is the comma-separated list of container-side ports so the
-	// agent knows which port(s) to bind its servers to.
+	// CONSTRUCT=1 is always set so the agent knows it is running inside construct.
+	args = append(args, "-e", "CONSTRUCT=1")
+
+	// Publish ports and advertise the container-side port list via CONSTRUCT_PORTS.
+	// A bare port number (e.g. "3000") is expanded to "3000:3000" so the same
+	// port number is used on both the host and the container, matching user
+	// expectations when they pass --port 3000.
 	if len(cfg.Ports) > 0 {
-		for _, p := range cfg.Ports {
-			args = append(args, "-p", p)
-		}
-		// Extract the container-side port from each mapping for CONSTRUCT_PORTS.
-		// Accepted formats: "3000", "3000:3000", "127.0.0.1:3000:3000".
 		containerPorts := make([]string, len(cfg.Ports))
 		for i, p := range cfg.Ports {
 			parts := strings.Split(p, ":")
 			containerPorts[i] = parts[len(parts)-1]
+			// Expand bare "N" to "N:N" so Docker maps host port N → container port N.
+			if len(parts) == 1 {
+				p = p + ":" + p
+			}
+			args = append(args, "-p", p)
 		}
 		args = append(args,
-			"-e", "CONSTRUCT=1",
 			"-e", "CONSTRUCT_PORTS="+strings.Join(containerPorts, ","),
 		)
 	}
@@ -300,17 +302,18 @@ func generatedEntrypoint() string {
 		"else\n" +
 		"  rm -f \"${HOME}/.config/opencode/opencode.json\"\n" +
 		"fi\n" +
-		"# Write port-binding instructions to ~/.config/opencode/AGENTS.md when\n" +
-		"# --port was used (signalled by CONSTRUCT=1). This gives the agent the\n" +
-		"# context it needs to bind servers correctly without modifying the workspace.\n" +
-		"# Delete the file when CONSTRUCT is not set so a stale file from a previous\n" +
-		"# --port session does not persist in the home volume.\n" +
-		"if [ \"${CONSTRUCT}\" = \"1\" ]; then\n" +
-		"  mkdir -p \"${HOME}/.config/opencode\"\n" +
-		"  cat > \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
+		"# CONSTRUCT=1 is always set, so always write ~/.config/opencode/AGENTS.md\n" +
+		"# to inform the agent that it is running inside a construct container.\n" +
+		"# When --port was used, CONSTRUCT_PORTS is also set and extra port-binding\n" +
+		"# rules are appended.\n" +
+		"mkdir -p \"${HOME}/.config/opencode\"\n" +
+		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"# Construct container context\n" +
 		"\n" +
-		"You are running inside a construct container with port forwarding enabled.\n" +
+		"You are running inside a construct container.\n" +
+		"AGENTSEOF\n" +
+		"if [ -n \"${CONSTRUCT_PORTS}\" ]; then\n" +
+		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"\n" +
 		"## Server binding rules\n" +
 		"\n" +
@@ -320,8 +323,6 @@ func generatedEntrypoint() string {
 		"- When the server is ready, print a clear message so the user knows to open\n" +
 		"  their browser, e.g.: \"Server ready at http://localhost:${CONSTRUCT_PORTS}\"\n" +
 		"AGENTSEOF\n" +
-		"else\n" +
-		"  rm -f \"${HOME}/.config/opencode/AGENTS.md\"\n" +
 		"fi\n" +
 		"exec \"$@\"\n"
 }

@@ -6,7 +6,7 @@ Running `construct` requires remembering the `--tool` and `--stack` flags used l
 
 ## Solution
 
-Introduce a `qs` subcommand that replays the last `--tool` and `--stack` used in a repository without requiring the user to re-type them.
+Introduce a `qs` subcommand that replays the last `--tool`, `--stack`, `--mcp`, and `--port` flags used in a repository without requiring the user to re-type them.
 
 ## Behaviour
 
@@ -17,6 +17,7 @@ construct qs [path]
 - `path` defaults to the current working directory.
 - Prints `construct qs: reusing --tool <tool> --stack <stack>` to stderr before launching.
 - Errors with a clear message if no previous run has been recorded for the given path.
+- Replays `--mcp` and all `--port` values that were used in the last recorded invocation.
 
 ## Persistence
 
@@ -25,9 +26,12 @@ Last-used settings are stored in `~/.construct/last-used.json` as a JSON object 
 ```json
 {
   "/home/alice/projects/myapp": { "tool": "copilot", "stack": "node" },
-  "/home/alice/projects/api":   { "tool": "opencode", "stack": "go" }
+  "/home/alice/projects/api":   { "tool": "opencode", "stack": "go" },
+  "/home/alice/projects/web":   { "tool": "opencode", "stack": "ui", "mcp": true, "ports": ["3000", "8080:8080"] }
 }
 ```
+
+The `mcp` key is omitted when `false`; the `ports` key is omitted when empty.
 
 The file is written atomically (write to `.tmp`, then rename) with mode `0600`. The directory is created with mode `0700` if it does not exist.
 

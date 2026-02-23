@@ -6,10 +6,13 @@ import (
 	"path/filepath"
 )
 
-// LastUsed holds the tool and stack that were last used for a repository.
+// LastUsed holds the tool and stack that were last used for a repository,
+// plus any optional --mcp and --port flags.
 type LastUsed struct {
-	Tool  string `json:"tool"`
-	Stack string `json:"stack"`
+	Tool  string   `json:"tool"`
+	Stack string   `json:"stack"`
+	MCP   bool     `json:"mcp,omitempty"`
+	Ports []string `json:"ports,omitempty"`
 }
 
 // lastUsedFile returns the path to ~/.construct/last-used.json.
@@ -21,8 +24,8 @@ func lastUsedFile() (string, error) {
 	return filepath.Join(home, ".construct", "last-used.json"), nil
 }
 
-// SaveLastUsed records the tool and stack used for repoPath.
-func SaveLastUsed(repoPath, tool, stack string) error {
+// SaveLastUsed records the tool, stack, mcp flag, and ports used for repoPath.
+func SaveLastUsed(repoPath, tool, stack string, mcp bool, ports []string) error {
 	path, err := lastUsedFile()
 	if err != nil {
 		return err
@@ -33,7 +36,7 @@ func SaveLastUsed(repoPath, tool, stack string) error {
 		return err
 	}
 
-	m[repoPath] = LastUsed{Tool: tool, Stack: stack}
+	m[repoPath] = LastUsed{Tool: tool, Stack: stack, MCP: mcp, Ports: ports}
 	return writeLastUsedMap(path, m)
 }
 

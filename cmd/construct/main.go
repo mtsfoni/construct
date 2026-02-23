@@ -109,7 +109,7 @@ func runAgent(args []string) {
 	}
 
 	// Persist so `construct qs` can replay this invocation.
-	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName); err != nil {
+	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName, *mcp, []string(ports)); err != nil {
 		log.Printf("warning: could not save last-used settings: %v", err)
 	}
 
@@ -252,5 +252,13 @@ func runQuickstart(args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "construct qs: reusing --tool %s --stack %s\n", last.Tool, last.Stack)
-	runAgent([]string{"--tool", last.Tool, "--stack", last.Stack, absRepoPath})
+	agentArgs := []string{"--tool", last.Tool, "--stack", last.Stack}
+	if last.MCP {
+		agentArgs = append(agentArgs, "--mcp")
+	}
+	for _, p := range last.Ports {
+		agentArgs = append(agentArgs, "--port", p)
+	}
+	agentArgs = append(agentArgs, absRepoPath)
+	runAgent(agentArgs)
 }

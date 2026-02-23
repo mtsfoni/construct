@@ -29,33 +29,24 @@ The flag is repeatable: each `--port` adds one `-p` to the underlying
 
 | `--port` value | Docker flag | CONSTRUCT_PORTS |
 |---|---|---|
-| `3000` | `-p 3000` | `3000` |
+| `3000` | `-p 3000:3000` | `3000` |
 | `3000:3000` | `-p 3000:3000` | `3000` |
 | `9000:3000` | `-p 9000:3000` | `3000` |
 | `127.0.0.1:3000:3000` | `-p 127.0.0.1:3000:3000` | `3000` |
 
-`CONSTRUCT_PORTS` always carries the **container-side** port (the last
-colon-delimited segment), which is what the agent's server must bind to.
+A bare port number (e.g. `3000`) is automatically expanded to `3000:3000` so
+that the same port is used on both the host and the container, matching user
+expectations.
 
 ## Environment variables injected
 
-When `--port` is used, two env vars are added to the container:
-
 | Variable | Value | Purpose |
 |---|---|---|
-| `CONSTRUCT` | `1` | Signals to the agent it is running inside construct |
-| `CONSTRUCT_PORTS` | comma-separated container-side ports | Tells the agent which port(s) to listen on |
+| `CONSTRUCT` | `1` | Always injected — signals to the agent it is running inside construct |
+| `CONSTRUCT_PORTS` | comma-separated container-side ports | Only injected when `--port` is used; tells the agent which port(s) to listen on |
 
-Neither variable is injected when `--port` is not used, so existing sessions
-are unaffected.
-
-### Why only when ports are set
-
-`CONSTRUCT=1` could be always-injected, but tying it to `--port` keeps the
-signal meaningful: the agent only needs to change its behaviour (bind address,
-port selection) when the user has explicitly said "I want to reach this app".
-An unconditional `CONSTRUCT=1` with no port information would add noise without
-actionable information.
+`CONSTRUCT=1` is always present regardless of whether `--port` is used.
+`CONSTRUCT_PORTS` is only set when at least one `--port` was passed.
 
 ## Agent awareness
 
