@@ -311,6 +311,15 @@ func generatedEntrypoint() string {
 		"# Construct container context\n" +
 		"\n" +
 		"You are running inside a construct container.\n" +
+		"\n" +
+		"## Networking\n" +
+		"\n" +
+		"Docker runs on a separate sidecar host, not localhost. DOCKER_HOST is already set.\n" +
+		"Containers you start are reachable at hostname **dind**, not 127.0.0.1.\n" +
+		"Example: a Postgres container is at dind:5432, not localhost:5432.\n" +
+		"\n" +
+		"The user can access ports on this machine directly, but cannot reach ports inside Docker containers.\n" +
+		"Run services on this machine (not in Docker containers) so the user can access them.\n" +
 		"AGENTSEOF\n" +
 		"if [ -n \"${CONSTRUCT_PORTS}\" ]; then\n" +
 		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +

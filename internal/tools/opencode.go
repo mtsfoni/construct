@@ -14,7 +14,8 @@ func init() {
 		RunCmd: []string{"opencode"},
 		// OPENCODE_PERMISSION={"*":"allow"} grants auto-approval for all tool calls (yolo mode).
 		ExtraEnv: map[string]string{
-			"OPENCODE_PERMISSION": `{"*":"allow"}`,
+			"OPENCODE_PERMISSION":                          `{"*":"allow"}`,
+			"OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT": "true",
 		},
 		// AuthVolumePath points to the directory where opencode stores its OAuth tokens
 		// and provider auth state (auth.json). Mounting a global named volume here means
