@@ -46,7 +46,7 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct --tool <tool> [--stack <stack>] [--rebuild] [--debug] [path]
+construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [path]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
 construct qs [path]
 ```
@@ -64,9 +64,11 @@ construct --tool opencode --stack python ~/projects/myapp
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
-| `--stack` | `node` | Language stack: `base`, `node`, `dotnet`, `python`, `go` |
+| `--stack` | `node` | Language stack: `base`, `node`, `dotnet`, `python`, `go`, `ui` |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
+| `--reset` | `false` | Wipe and re-seed the agent home volume before starting |
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
+| `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui` for browser automation |
 
 ## Quickstart (`qs`)
 
@@ -94,6 +96,7 @@ The last-used tool/stack per repo is stored in `~/.construct/last-used.json`.
 | `dotnet` | base | .NET 10 SDK |
 | `python` | base | Python 3, pip |
 | `go` | base | Go 1.24 |
+| `ui` | node | `@playwright/mcp`, Chromium |
 
 ## Auth / config
 
@@ -130,5 +133,7 @@ a per-repo file, add `.construct/.env` to the repo's `.gitignore`.
 
 ## Agent instructions
 
-- `.github/copilot-instructions.md` in the repo — mounted automatically for both tools
-- `.construct/instructions.md` in the repo — takes precedence over the above; mounted as the tool's native instruction file
+The entire repo is bind-mounted at `/workspace`, so any instruction files already in the repo are available to the agent automatically — no special mounting needed. Place instructions wherever the tool expects them:
+
+- `.github/copilot-instructions.md` — picked up by GitHub Copilot
+- `AGENTS.md` — picked up by OpenCode and other tools that follow the Agents convention
