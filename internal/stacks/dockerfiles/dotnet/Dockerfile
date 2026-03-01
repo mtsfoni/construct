@@ -2,6 +2,9 @@ FROM construct-base
 
 USER root
 
+# Install ICU libraries for .NET globalization support
+RUN apt-get update && apt-get install -y libicu70 && rm -rf /var/lib/apt/lists/*
+
 # Install .NET 10 SDK
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh \
     && chmod +x /tmp/dotnet-install.sh \
