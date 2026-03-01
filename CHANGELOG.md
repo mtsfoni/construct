@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.3.2] — 2026-03-01
+
+### Added
+
+- **Static `dind` network alias** — the dind sidecar now registers the alias `dind` on its session-scoped bridge network. `DOCKER_HOST` is always `tcp://dind:2375`, matching the hostname already documented in the injected `AGENTS.md`. This makes the alias real rather than implied and keeps it stable across sessions.
+
+### Fixed
+
+- **`dotnet`/`dotnet-ui` stack** — `libicu70` is now installed in the image, resolving a runtime crash when .NET applications use globalization (ICU mode). Previously .NET would abort on startup with `Couldn't find a valid ICU package`.
+
+---
+
 ## [v0.3.0] — 2026-02-23
 
 ### Added
