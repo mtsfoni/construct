@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`dotnet-big` stack** — new `construct-dotnet-big` image extending `construct-base` with the .NET 8, 9, and 10 SDKs installed side-by-side. Use when a project targets multiple .NET generations or must verify cross-version compatibility.
+- **`dotnet-big-ui` stack** — new `construct-dotnet-big-ui` image extending `construct-dotnet-big` with `@playwright/mcp` and Chromium. Use with `--mcp` for projects that need multi-version .NET support and browser automation in the same session.
+
+---
+
 ## [v0.3.2] — 2026-03-01
 
 ### Added

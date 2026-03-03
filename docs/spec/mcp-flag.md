@@ -13,8 +13,8 @@ log errors on startup and attempt to start a server that cannot exist.
 
 Separate installation from activation:
 
-- **Installation** is determined by the stack image. Only the `ui` stack
-  installs `@playwright/mcp` and Chromium.
+- **Installation** is determined by the stack image. The `ui`, `dotnet-ui`, and
+  `dotnet-big-ui` stacks install `@playwright/mcp` and Chromium.
 - **Activation** is determined by the `--mcp` flag. Passing `--mcp` causes the
   entrypoint script to write `~/.config/opencode/opencode.json` at container
   startup, registering the MCP server with opencode.
@@ -27,6 +27,8 @@ This means MCP is opt-in and explicit rather than always-on.
 |---|---|---|---|
 | `--stack ui` | Yes | No (deleted if stale) | Clean; no MCP |
 | `--stack ui --mcp` | Yes | Yes | MCP fully functional |
+| `--stack dotnet-ui --mcp` | Yes | Yes | MCP fully functional |
+| `--stack dotnet-big-ui --mcp` | Yes | Yes | MCP fully functional |
 | `--stack go --mcp` | No | Yes | Config written; opencode logs MCP error but continues |
 | `--stack go` | No | No (deleted if stale) | Clean; no MCP |
 
@@ -48,7 +50,7 @@ therefore **always** manages the config file at startup:
 
 A new boolean flag `--mcp` is added to `runAgent`. When set it:
 
-1. Prints a warning if `--stack` is not `ui`.
+1. Prints a warning if `--stack` is not `ui`, `dotnet-ui`, or `dotnet-big-ui`.
 2. Passes `MCP: true` to `runner.Config`.
 
 ### `runner.Config`
@@ -97,7 +99,7 @@ is no longer seeded via the home volume initialisation path.
 
 | File | Change |
 |---|---|
-| `cmd/construct/main.go` | Add `--mcp` bool flag; warn if used without `--stack ui`; pass to `runner.Config` |
+| `cmd/construct/main.go` | Add `--mcp` bool flag; warn if used without `--stack ui`, `--stack dotnet-ui`, or `--stack dotnet-big-ui`; pass to `runner.Config` |
 | `internal/runner/runner.go` | Add `MCP bool` to `Config`; inject `CONSTRUCT_MCP=1` env var; extend generated entrypoint |
 | `internal/tools/opencode.go` | Remove `HomeFiles` map |
 | `docs/spec/playwright-mcp-config.md` | Updated to reference `--mcp` flag and entrypoint-based activation |

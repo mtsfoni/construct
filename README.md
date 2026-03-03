@@ -65,11 +65,11 @@ construct --tool opencode --stack ui --mcp --port 3000 .
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
-| `--stack` | `base` | Language stack: `base`, `dotnet`, `go`, `ui` |
+| `--stack` | `base` | Language stack: `base`, `dotnet`, `dotnet-big`, `dotnet-big-ui`, `dotnet-ui`, `go`, `ui` |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
 | `--reset` | `false` | Wipe and re-seed the per-repo agent home volume before starting. Does **not** affect the global auth volume. |
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
-| `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui` for browser automation |
+| `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui`, `--stack dotnet-ui`, or `--stack dotnet-big-ui` for browser automation |
 | `--port` | *(none)* | Publish a container port to the host (repeatable). Accepts any format `docker run -p` supports: `3000`, `9000:3000`, `127.0.0.1:3000:3000`. |
 
 ## Quickstart (`qs`)
@@ -95,6 +95,8 @@ construct qs [path]
 |-------|------|-----------|
 | `base` | Ubuntu 22.04, Node 20, Python 3, Docker CLI, buildx, git | — |
 | `dotnet` | base | .NET 10 SDK |
+| `dotnet-big` | base | .NET 8, 9, and 10 SDKs |
+| `dotnet-big-ui` | dotnet-big | `@playwright/mcp`, Chromium |
 | `dotnet-ui` | dotnet | `@playwright/mcp`, Chromium |
 | `go` | base | Go 1.24 |
 | `ui` | base | `@playwright/mcp`, Chromium |

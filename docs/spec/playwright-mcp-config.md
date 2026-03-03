@@ -10,7 +10,7 @@ registered with opencode before it can be used.
 
 Separate installation from activation:
 
-- The `ui` stack image installs `@playwright/mcp` and Chromium at build time.
+- The `ui`, `dotnet-ui`, and `dotnet-big-ui` stack images install `@playwright/mcp` and Chromium at build time.
 - Passing `--mcp` on the CLI causes the entrypoint script to write
   `~/.config/opencode/opencode.json` at container startup, registering the MCP
   server with opencode.
@@ -24,7 +24,7 @@ See [`docs/spec/mcp-flag.md`](mcp-flag.md) for the full specification of the
 
 `construct --tool opencode --stack ui --mcp .`
 
-Produces a `construct-ui` Docker image that extends `construct-node` with:
+Produces a `construct-ui` Docker image that extends `construct-base` with:
 
 - `@playwright/mcp` npm package installed globally.
 - Chromium installed to `/ms-playwright` (fixed path, world-readable).

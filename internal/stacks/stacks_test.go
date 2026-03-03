@@ -6,7 +6,7 @@ import (
 )
 
 func TestIsValid_KnownStacks(t *testing.T) {
-	known := []string{"base", "dotnet", "dotnet-ui", "go", "ui"}
+	known := []string{"base", "dotnet", "dotnet-big", "dotnet-ui", "go", "ui"}
 	for _, s := range known {
 		if !IsValid(s) {
 			t.Errorf("IsValid(%q) = false, want true", s)
@@ -133,6 +133,84 @@ func TestEmbeddedDockerfiles_UIContent(t *testing.T) {
 	for _, c := range checks {
 		if !strings.Contains(content, c.snippet) {
 			t.Errorf("ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetBigExists(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile for dotnet-big not found: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("embedded Dockerfile for dotnet-big is empty")
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetBigContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded dotnet-big Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"extends construct-base", "FROM construct-base"},
+		{"installs .NET 8 SDK", "--channel 8.0"},
+		{"installs .NET 9 SDK", "--channel 9.0"},
+		{"installs .NET 10 SDK", "--channel 10.0"},
+		{"sets DOTNET_ROOT", "DOTNET_ROOT=/usr/share/dotnet"},
+		{"opts out of telemetry", "DOTNET_CLI_TELEMETRY_OPTOUT=1"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("dotnet-big Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+func TestStackDeps_DotnetBigUIHasBaseAndDotnetBig(t *testing.T) {
+	deps, ok := stackDeps["dotnet-big-ui"]
+	if !ok {
+		t.Fatal("stackDeps[\"dotnet-big-ui\"] not set")
+	}
+	if len(deps) != 2 || deps[0] != "base" || deps[1] != "dotnet-big" {
+		t.Errorf("stackDeps[\"dotnet-big-ui\"] = %v, want [\"base\", \"dotnet-big\"]", deps)
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetBigUIExists(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile for dotnet-big-ui not found: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("embedded Dockerfile for dotnet-big-ui is empty")
+	}
+}
+
+func TestEmbeddedDockerfiles_DotnetBigUIContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded dotnet-big-ui Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"extends construct-dotnet-big", "FROM construct-dotnet-big"},
+		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
+		{"installs Chromium via playwright cli", "playwright install"},
+		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("dotnet-big-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
 		}
 	}
 }
