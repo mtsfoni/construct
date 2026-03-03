@@ -1,19 +1,22 @@
 # construct
 
-Run AI coding agents in yolo/auto-approve mode without giving them access to your actual machine. Not a perfect sandbox, but meaningfully better than running directly on your host. The agent gets its own isolated Docker daemon so it can build, test, and run containers freely without touching yours.
+Run AI coding agents in yolo/auto-approve mode without giving them access to your actual machine. Not a perfect sandbox, but meaningfully better than running directly on your host. By default the agent has no Docker access; opt in to Docker-in-Docker or Docker-outside-of-Docker when your workload needs it.
 
 > **Linux and Windows.** construct requires a Docker host (Docker Desktop, Engine, or OrbStack). Docker Desktop on macOS is not yet supported.
 
 ## How it works
 
-Each session spins up a fresh [Docker-in-Docker](https://hub.docker.com/_/docker) (dind) sidecar container with its own private Docker daemon. The agent container joins the same isolated network and talks to that daemon via `DOCKER_HOST`. When the session ends — cleanly or via Ctrl-C — both containers and the network are removed.
+construct runs the agent in a Docker container with only the repository bind-mounted. Docker access is opt-in via `--docker`:
 
-This means the agent:
+- **`--docker none`** *(default)* — no Docker inside the container. Fastest start, minimal attack surface.
+- **`--docker dood`** — Docker-outside-of-Docker: the host socket `/var/run/docker.sock` is bind-mounted so the agent shares your host daemon.
+- **`--docker dind`** — Docker-in-Docker: a fresh [Docker-in-Docker](https://hub.docker.com/_/docker) sidecar is started with its own private daemon on an isolated bridge network. The agent talks to it via `DOCKER_HOST=tcp://dind:2375`. Both containers and the network are removed when the session ends.
+
+In `dind` mode the agent:
 - Cannot see your host Docker daemon or any of your existing containers/images
 - Gets a clean, empty Docker environment to build and run whatever it needs
-- Is isolated from your host filesystem — it can only access the repo you point it at
 
-**Testcontainers works out of the box.** Because the agent has its own Docker daemon, frameworks like [Testcontainers](https://testcontainers.com/) that spin up containers during tests just work — no extra configuration needed.
+**Testcontainers works out of the box in `dind` mode.** Because the agent has its own Docker daemon, frameworks like [Testcontainers](https://testcontainers.com/) that spin up containers during tests just work — no extra configuration needed.
 
 > **Not a security guarantee.** A sufficiently motivated agent could escape the container. This tool is about isolation and a clean workspace, not hardened sandboxing. See the [threat model](docs/threat-model.md) for a full breakdown of what is and isn't protected, and the deliberate trade-offs made.
 
@@ -46,7 +49,7 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
+construct --tool <tool> [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
 construct qs [path]
 ```
@@ -58,6 +61,7 @@ construct --tool opencode --stack dotnet /path/to/repo
 construct --tool copilot --stack base .
 construct --tool opencode --stack go ~/projects/myapp
 construct --tool opencode --stack ui --mcp --port 3000 .
+construct --tool opencode --stack go --docker dind .
 ```
 
 ### Flags
@@ -66,6 +70,7 @@ construct --tool opencode --stack ui --mcp --port 3000 .
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
 | `--stack` | `base` | Language stack: `base`, `dotnet`, `dotnet-big`, `dotnet-big-ui`, `dotnet-ui`, `go`, `ui` |
+| `--docker` | `none` | Docker access mode: `none` (no Docker), `dood` (share host socket), `dind` (isolated Docker-in-Docker sidecar) |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
 | `--reset` | `false` | Wipe and re-seed the per-repo agent home volume before starting. Does **not** affect the global auth volume. |
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
@@ -80,7 +85,7 @@ After running `construct` at least once in a repo, replay the exact same invocat
 construct qs [path]
 ```
 
-`qs` restores the last `--tool`, `--stack`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
+`qs` restores the last `--tool`, `--stack`, `--docker`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
 
 ## Supported tools
 
@@ -141,4 +146,4 @@ The entire repo is bind-mounted at `/workspace`, so any instruction files alread
 - `.github/copilot-instructions.md` — picked up by GitHub Copilot
 - `AGENTS.md` — picked up by OpenCode and other tools that follow the Agents convention
 
-construct also injects a global `~/.config/opencode/AGENTS.md` into every session that tells the agent it is running inside a construct container. When `--port` is used, this file also contains server binding rules (bind to `0.0.0.0`, use the published ports) so the agent's dev server is reachable from the host browser.
+construct also injects a global `~/.config/opencode/AGENTS.md` into every session that tells the agent it is running inside a construct container. The content of this file is mode-aware: in `dind` mode it includes Docker usage guidance and Testcontainers notes; in `dood` mode it warns that the agent is sharing the host Docker daemon; in `none` mode no Docker guidance is included. When `--port` is used, this file also contains server binding rules (bind to `0.0.0.0`, use the published ports) so the agent's dev server is reachable from the host browser.

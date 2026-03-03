@@ -40,10 +40,14 @@ type Config struct {
 	// Each entry is passed as a separate -p flag. When non-empty, CONSTRUCT=1 and
 	// CONSTRUCT_PORTS (comma-separated list) are also injected as env vars.
 	Ports []string
+	// DockerMode controls whether and how the agent container gets Docker access.
+	// Valid values: "none" (no Docker; default), "dood" (Docker-outside-of-Docker
+	// via host socket bind-mount), "dind" (Docker-in-Docker sidecar).
+	DockerMode string
 }
 
-// Run builds images, starts dind, and runs the agent container.
-// It blocks until the container exits and then cleans up.
+// Run builds images, starts any requested Docker sidecar, and runs the agent
+// container. It blocks until the container exits and then cleans up.
 func Run(cfg *Config) error {
 	// 1. Ensure the stack image exists (build if needed).
 	if err := stacks.EnsureBuilt(cfg.Stack, cfg.Rebuild); err != nil {
@@ -102,12 +106,15 @@ func Run(cfg *Config) error {
 	}
 	defer os.RemoveAll(secretsDir)
 
-	// 7. Start the dind sidecar.
-	fmt.Printf("construct: starting dind sidecar (session %s)…\n", sessionID)
-	dindInst, err := dind.Start(sessionID)
-	if err != nil {
-		os.RemoveAll(secretsDir)
-		return fmt.Errorf("start dind: %w", err)
+	// 7. Start the dind sidecar only when explicitly requested.
+	var dindInst *dind.Instance
+	if cfg.DockerMode == "dind" {
+		fmt.Printf("construct: starting dind sidecar (session %s)…\n", sessionID)
+		dindInst, err = dind.Start(sessionID)
+		if err != nil {
+			os.RemoveAll(secretsDir)
+			return fmt.Errorf("start dind: %w", err)
+		}
 	}
 
 	// Always clean up on exit — even on SIGINT/SIGTERM.
@@ -121,14 +128,18 @@ func Run(cfg *Config) error {
 		case <-sigs:
 			fmt.Println("\nconstruct: interrupted — cleaning up…")
 			os.RemoveAll(secretsDir)
-			dindInst.Stop()
+			if dindInst != nil {
+				dindInst.Stop()
+			}
 			os.Exit(1)
 		case <-stopped:
 		}
 	}()
 	defer func() {
 		close(stopped)
-		dindInst.Stop()
+		if dindInst != nil {
+			dindInst.Stop()
+		}
 	}()
 
 	// 8. Build the docker run argument list.
@@ -149,16 +160,20 @@ func Run(cfg *Config) error {
 }
 
 // buildRunArgs assembles the arguments for "docker run" that starts the agent.
-func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, authVolume, secretsDir string) []string {
+// dindInst is non-nil only when cfg.DockerMode == "dind".
+func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVolume, authVolume, secretsDir string) []string {
 	// Run as the host user so the bind-mounted workspace directory is accessible.
 	uid := os.Getuid()
 	gid := os.Getgid()
 
-	args := []string{
-		"run", "--rm", "-it",
-		"--name", "construct-agent-" + sessionID,
-		"--network", d.NetworkName,
+	args := []string{"run", "--rm", "-it"}
+
+	// Attach to the dind session network when using Docker-in-Docker.
+	if cfg.DockerMode == "dind" && dindInst != nil {
+		args = append(args, "--network", dindInst.NetworkName)
 	}
+
+	args = append(args, "--name", "construct-agent-"+sessionID)
 
 	// On Windows, os.Getuid/os.Getgid return -1. Skip --user; Docker Desktop
 	// runs containers through a Linux VM so host UID/GID mapping is not applicable.
@@ -176,7 +191,27 @@ func buildRunArgs(cfg *Config, d *dind.Instance, image, sessionID, homeVolume, a
 		"-e", "GIT_AUTHOR_EMAIL=agent@construct.local",
 		"-e", "GIT_COMMITTER_NAME=construct agent",
 		"-e", "GIT_COMMITTER_EMAIL=agent@construct.local",
-		"-e", "DOCKER_HOST="+d.DockerHost(),
+	)
+
+	// Set DOCKER_HOST and mount the Docker socket according to the requested mode.
+	switch cfg.DockerMode {
+	case "dind":
+		// Docker-in-Docker: point at the dind sidecar via its network alias.
+		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
+	case "dood":
+		// Docker-outside-of-Docker: bind-mount the host socket.
+		args = append(args,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
+		)
+		// "none" (default): no DOCKER_HOST, no socket — agent has no Docker access.
+	}
+
+	// Always inject the docker mode so the entrypoint can write mode-appropriate
+	// context into ~/.config/opencode/AGENTS.md.
+	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
+
+	args = append(args,
 		"-v", cfg.RepoPath+":/workspace:z",
 		"-w", "/workspace",
 	)
@@ -304,13 +339,15 @@ func generatedEntrypoint() string {
 		"fi\n" +
 		"# CONSTRUCT=1 is always set, so always write ~/.config/opencode/AGENTS.md\n" +
 		"# to inform the agent that it is running inside a construct container.\n" +
-		"# When --port was used, CONSTRUCT_PORTS is also set and extra port-binding\n" +
-		"# rules are appended.\n" +
+		"# The networking section depends on CONSTRUCT_DOCKER_MODE.\n" +
 		"mkdir -p \"${HOME}/.config/opencode\"\n" +
 		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"# Construct container context\n" +
 		"\n" +
 		"You are running inside a construct container.\n" +
+		"AGENTSEOF\n" +
+		"if [ \"${CONSTRUCT_DOCKER_MODE}\" = \"dind\" ]; then\n" +
+		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"\n" +
 		"## Networking\n" +
 		"\n" +
@@ -321,6 +358,25 @@ func generatedEntrypoint() string {
 		"The user can access ports on this machine directly, but cannot reach ports inside Docker containers.\n" +
 		"Run services on this machine (not in Docker containers) so the user can access them.\n" +
 		"AGENTSEOF\n" +
+		"elif [ \"${CONSTRUCT_DOCKER_MODE}\" = \"dood\" ]; then\n" +
+		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
+		"\n" +
+		"## Networking\n" +
+		"\n" +
+		"Docker is available via the host socket (Docker-outside-of-Docker). DOCKER_HOST is already set.\n" +
+		"Containers you start share the host Docker network and are reachable at 127.0.0.1 or their container name.\n" +
+		"\n" +
+		"The user can access ports on this machine directly, and containers that publish ports are also accessible.\n" +
+		"AGENTSEOF\n" +
+		"else\n" +
+		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
+		"\n" +
+		"## Networking\n" +
+		"\n" +
+		"No Docker access is available in this container (--docker none).\n" +
+		"Do not attempt to run Docker commands.\n" +
+		"AGENTSEOF\n" +
+		"fi\n" +
 		"if [ -n \"${CONSTRUCT_PORTS}\" ]; then\n" +
 		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"\n" +

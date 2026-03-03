@@ -6,7 +6,7 @@ Running `construct` requires remembering the `--tool` and `--stack` flags used l
 
 ## Solution
 
-Introduce a `qs` subcommand that replays the last `--tool`, `--stack`, `--mcp`, and `--port` flags used in a repository without requiring the user to re-type them.
+Introduce a `qs` subcommand that replays the last `--tool`, `--stack`, `--docker`, `--mcp`, and `--port` flags used in a repository without requiring the user to re-type them.
 
 ## Behaviour
 
@@ -15,9 +15,11 @@ construct qs [path]
 ```
 
 - `path` defaults to the current working directory.
-- Prints `construct qs: reusing --tool <tool> --stack <stack>` to stderr before launching.
+- Prints all replayed flags to stderr before launching, e.g.:
+  `construct qs: reusing --tool opencode --stack go --docker dind --mcp --port 3000`
 - Errors with a clear message if no previous run has been recorded for the given path.
-- Replays `--mcp` and all `--port` values that were used in the last recorded invocation.
+- Replays `--docker`, `--mcp`, and all `--port` values that were used in the last recorded invocation.
+- For entries recorded before `--docker` was introduced (no `"docker"` key), defaults to `--docker none`.
 
 ## Persistence
 
@@ -26,12 +28,12 @@ Last-used settings are stored in `~/.construct/last-used.json` as a JSON object 
 ```json
 {
   "/home/alice/projects/myapp": { "tool": "copilot", "stack": "node" },
-  "/home/alice/projects/api":   { "tool": "opencode", "stack": "go" },
-  "/home/alice/projects/web":   { "tool": "opencode", "stack": "ui", "mcp": true, "ports": ["3000", "8080:8080"] }
+  "/home/alice/projects/api":   { "tool": "opencode", "stack": "go", "docker": "dind" },
+  "/home/alice/projects/web":   { "tool": "opencode", "stack": "ui", "mcp": true, "ports": ["3000", "8080:8080"], "docker": "dood" }
 }
 ```
 
-The `mcp` key is omitted when `false`; the `ports` key is omitted when empty.
+The `mcp` key is omitted when `false`; the `ports` key is omitted when empty; the `docker` key is omitted when empty (legacy entries without a docker mode default to `none` at replay time).
 
 The file is written atomically (write to `.tmp`, then rename) with mode `0600`. The directory is created with mode `0700` if it does not exist.
 
@@ -41,8 +43,8 @@ Settings are saved automatically at the end of argument validation in every norm
 
 | File | Change |
 |------|--------|
-| `internal/config/lastused.go` | New — `SaveLastUsed`, `LoadLastUsed`, JSON read/write helpers |
-| `cmd/construct/main.go` | `main()` routes `qs` → `runQuickstart`; `runAgent` calls `SaveLastUsed`; help lists `qs` under Subcommands |
+| `internal/config/lastused.go` | New — `SaveLastUsed`, `LoadLastUsed`, JSON read/write helpers; `DockerMode` field added |
+| `cmd/construct/main.go` | `main()` routes `qs` → `runQuickstart`; `runAgent` calls `SaveLastUsed`; `runQuickstart` prints and replays all flags; help lists `qs` under Subcommands |
 | `README.md` | New **Quickstart (qs)** section |
 
 ## Non-goals

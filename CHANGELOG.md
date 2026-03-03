@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+---
+
+## [v0.4.0] — 2026-03-03
+
 ### Added
 
+- **`--docker` flag** — selects Docker access mode for the agent container. `--docker none` (default) starts no sidecar and sets no `DOCKER_HOST`, following the principle of least privilege. `--docker dood` bind-mounts the host socket (`/var/run/docker.sock`) for Docker-outside-of-Docker access. `--docker dind` starts an isolated privileged `docker:dind` sidecar (previous default behaviour). The mode is saved in `~/.construct/last-used.json` and replayed by `qs`. The injected `AGENTS.md` networking section is tailored to the active mode.
 - **`dotnet-big` stack** — new `construct-dotnet-big` image extending `construct-base` with the .NET 8, 9, and 10 SDKs installed side-by-side. Use when a project targets multiple .NET generations or must verify cross-version compatibility.
 - **`dotnet-big-ui` stack** — new `construct-dotnet-big-ui` image extending `construct-dotnet-big` with `@playwright/mcp` and Chromium. Use with `--mcp` for projects that need multi-version .NET support and browser automation in the same session.
 

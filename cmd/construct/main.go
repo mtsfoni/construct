@@ -52,11 +52,12 @@ func runAgent(args []string) {
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
 	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
+	dockerMode := fs.String("docker", "none", "Docker access mode: none (default, no Docker), dood (Docker-outside-of-Docker via host socket), dind (Docker-in-Docker sidecar)")
 	var ports portFlag
 	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
@@ -68,11 +69,17 @@ func runAgent(args []string) {
 		for _, s := range allStacks {
 			fmt.Fprintf(os.Stderr, "  %s\n", s)
 		}
+		fmt.Fprintf(os.Stderr, "\nDocker modes:\n")
+		fmt.Fprintf(os.Stderr, "  none   No Docker access inside the agent container (default)\n")
+		fmt.Fprintf(os.Stderr, "  dood   Docker-outside-of-Docker: bind-mounts the host socket (/var/run/docker.sock)\n")
+		fmt.Fprintf(os.Stderr, "  dind   Docker-in-Docker: starts a privileged dind sidecar container\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack dotnet /path/to/repo\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack base .\n")
 		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack go ~/projects/myapp\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack ui --mcp --port 3000 --port 8080 .\n\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack ui --mcp --port 3000 --port 8080 .\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --docker dood .\n")
+		fmt.Fprintf(os.Stderr, "  construct --tool opencode --docker dind .\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -96,6 +103,13 @@ func runAgent(args []string) {
 		log.Fatalf("unknown stack %q; supported stacks: %s", *stackName, strings.Join(allStacks, ", "))
 	}
 
+	switch *dockerMode {
+	case "none", "dood", "dind":
+		// valid
+	default:
+		log.Fatalf("unknown docker mode %q; supported modes: none, dood, dind", *dockerMode)
+	}
+
 	repoPath := "."
 	if fs.NArg() > 0 {
 		repoPath = fs.Arg(0)
@@ -109,19 +123,20 @@ func runAgent(args []string) {
 	}
 
 	// Persist so `construct qs` can replay this invocation.
-	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName, *mcp, []string(ports)); err != nil {
+	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName, *mcp, []string(ports), *dockerMode); err != nil {
 		log.Printf("warning: could not save last-used settings: %v", err)
 	}
 
 	if err := runner.Run(&runner.Config{
-		Tool:     tool,
-		Stack:    *stackName,
-		RepoPath: absRepoPath,
-		Rebuild:  *rebuild,
-		Debug:    *debug,
-		Reset:    *reset,
-		MCP:      *mcp,
-		Ports:    []string(ports),
+		Tool:       tool,
+		Stack:      *stackName,
+		RepoPath:   absRepoPath,
+		Rebuild:    *rebuild,
+		Debug:      *debug,
+		Reset:      *reset,
+		MCP:        *mcp,
+		Ports:      []string(ports),
+		DockerMode: *dockerMode,
 	}); err != nil {
 		log.Fatal(err)
 	}
@@ -251,8 +266,23 @@ func runQuickstart(args []string) {
 		log.Fatalf("qs: no previous run recorded for %s", absRepoPath)
 	}
 
-	fmt.Fprintf(os.Stderr, "construct qs: reusing --tool %s --stack %s\n", last.Tool, last.Stack)
-	agentArgs := []string{"--tool", last.Tool, "--stack", last.Stack}
+	// Default docker mode for old entries that pre-date the --docker flag.
+	dockerMode := last.DockerMode
+	if dockerMode == "" {
+		dockerMode = "none"
+	}
+
+	// Build the status line showing every flag that will be replayed.
+	statusLine := fmt.Sprintf("construct qs: reusing --tool %s --stack %s --docker %s", last.Tool, last.Stack, dockerMode)
+	if last.MCP {
+		statusLine += " --mcp"
+	}
+	for _, p := range last.Ports {
+		statusLine += " --port " + p
+	}
+	fmt.Fprintln(os.Stderr, statusLine)
+
+	agentArgs := []string{"--tool", last.Tool, "--stack", last.Stack, "--docker", dockerMode}
 	if last.MCP {
 		agentArgs = append(agentArgs, "--mcp")
 	}

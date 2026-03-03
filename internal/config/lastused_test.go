@@ -26,7 +26,7 @@ func TestSaveAndLoadLastUsed_RoundTrip(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	if err := config.SaveLastUsed(repo, "copilot", "node", false, nil); err != nil {
+	if err := config.SaveLastUsed(repo, "copilot", "node", false, nil, ""); err != nil {
 		t.Fatalf("SaveLastUsed: %v", err)
 	}
 
@@ -67,8 +67,8 @@ func TestSaveLastUsed_UpdatesExistingEntry(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "copilot", "node", false, nil))
-	must(t, config.SaveLastUsed(repo, "opencode", "python", false, nil))
+	must(t, config.SaveLastUsed(repo, "copilot", "node", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "opencode", "python", false, nil, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -84,8 +84,8 @@ func TestSaveLastUsed_IndependentEntriesPerRepo(t *testing.T) {
 
 	repo1 := t.TempDir()
 	repo2 := t.TempDir()
-	must(t, config.SaveLastUsed(repo1, "copilot", "node", false, nil))
-	must(t, config.SaveLastUsed(repo2, "opencode", "go", false, nil))
+	must(t, config.SaveLastUsed(repo1, "copilot", "node", false, nil, ""))
+	must(t, config.SaveLastUsed(repo2, "opencode", "go", false, nil, ""))
 
 	g1, err := config.LoadLastUsed(repo1)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 	}
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil))
+	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil, ""))
 
 	path := filepath.Join(home, ".construct", "last-used.json")
 	info, err := os.Stat(path)
@@ -125,7 +125,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 func TestSaveLastUsed_CreatesConstructDir(t *testing.T) {
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil))
+	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil, ""))
 
 	dir := filepath.Join(home, ".construct")
 	info, err := os.Stat(dir)
@@ -141,7 +141,7 @@ func TestSaveAndLoadLastUsed_MCPAndPorts(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "ui", true, []string{"3000", "8080:8080"}))
+	must(t, config.SaveLastUsed(repo, "opencode", "ui", true, []string{"3000", "8080:8080"}, "dind"))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -153,13 +153,16 @@ func TestSaveAndLoadLastUsed_MCPAndPorts(t *testing.T) {
 	if len(got.Ports) != 2 || got.Ports[0] != "3000" || got.Ports[1] != "8080:8080" {
 		t.Errorf("Ports = %v, want [3000 8080:8080]", got.Ports)
 	}
+	if got.DockerMode != "dind" {
+		t.Errorf("DockerMode = %q, want %q", got.DockerMode, "dind")
+	}
 }
 
 func TestSaveAndLoadLastUsed_MCPFalseOmitted(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil))
+	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -170,5 +173,36 @@ func TestSaveAndLoadLastUsed_MCPFalseOmitted(t *testing.T) {
 	}
 	if len(got.Ports) != 0 {
 		t.Errorf("Ports = %v, want empty", got.Ports)
+	}
+}
+
+func TestSaveAndLoadLastUsed_DockerMode(t *testing.T) {
+	withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, "dind"))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	if got.DockerMode != "dind" {
+		t.Errorf("DockerMode = %q, want %q", got.DockerMode, "dind")
+	}
+}
+
+func TestSaveAndLoadLastUsed_DockerModeOmittedWhenEmpty(t *testing.T) {
+	withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, ""))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	// Empty string means no explicit mode was saved; caller defaults to "none".
+	if got.DockerMode != "" {
+		t.Errorf("DockerMode = %q, want empty string when not set", got.DockerMode)
 	}
 }

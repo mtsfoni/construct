@@ -45,7 +45,7 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 
 ## Key conventions
 
-**Any change that alters product behaviour** (new commands, new flags, new stacks/tools, changed defaults, new persistence) **must be accompanied by a spec document** in `docs/spec/`. Name the file after the feature (e.g. `docs/spec/quickstart-qs.md`). The spec should cover: the problem, the solution/behaviour, persistence details if applicable, and a table of files changed.
+**Any change that alters product behaviour** (new commands, new flags, new stacks/tools, changed defaults, new persistence) **must be accompanied by a spec document** in `docs/spec/` and an entry in `CHANGELOG.md` under `## [Unreleased]`. Name the file after the feature (e.g. `docs/spec/quickstart-qs.md`). The spec should cover: the problem, the solution/behaviour, persistence details if applicable, and a table of files changed.
 
 **Adding a new tool** — create a new file in `internal/tools/` that calls `register(&Tool{...})` in `init()`. No other registration is needed.
 

@@ -91,6 +91,8 @@ func fakeDind() *dind.Instance {
 }
 
 // fakeConfig builds a minimal Config with the given tool AuthEnvVars.
+// DockerMode defaults to "dind" so existing tests that rely on fakeDind() keep
+// passing without change.
 func fakeConfig(t *testing.T, authKeys []string) *Config {
 	t.Helper()
 	return &Config{
@@ -99,13 +101,14 @@ func fakeConfig(t *testing.T, authKeys []string) *Config {
 			AuthEnvVars: authKeys,
 			RunCmd:      []string{"echo"},
 		},
-		Stack:    "node",
-		RepoPath: t.TempDir(),
+		Stack:      "node",
+		RepoPath:   t.TempDir(),
+		DockerMode: "dind",
 	}
 }
 
 func TestBuildRunArgs_DockerHostUsesStaticDindAlias(t *testing.T) {
-	cfg := fakeConfig(t, nil)
+	cfg := fakeConfig(t, nil) // DockerMode = "dind"
 	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
 
 	want := "DOCKER_HOST=tcp://dind:2375"
@@ -947,5 +950,113 @@ func TestBuildRunArgs_Ports_AbsentWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(joined, "CONSTRUCT_PORTS") {
 		t.Errorf("CONSTRUCT_PORTS should be absent when no ports set; got: %v", args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Docker mode tests
+// ---------------------------------------------------------------------------
+
+// TestBuildRunArgs_NoneMode_NoDockerHost verifies that when DockerMode is "none"
+// (the default), DOCKER_HOST is not injected and no network is attached.
+func TestBuildRunArgs_NoneMode_NoDockerHost(t *testing.T) {
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "none",
+	}
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "DOCKER_HOST") {
+		t.Errorf("DOCKER_HOST must not be set in none mode; got: %v", args)
+	}
+	if strings.Contains(joined, "--network") {
+		t.Errorf("--network must not appear in none mode; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_DOCKER_MODE=none") {
+		t.Errorf("expected -e CONSTRUCT_DOCKER_MODE=none in args; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_DoodMode_MountsSocket verifies that DooD mode bind-mounts
+// /var/run/docker.sock and sets DOCKER_HOST to the host socket path.
+func TestBuildRunArgs_DoodMode_MountsSocket(t *testing.T) {
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "/var/run/docker.sock:/var/run/docker.sock") {
+		t.Errorf("expected docker socket bind-mount in dood mode; got: %v", args)
+	}
+	if !containsPair(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock") {
+		t.Errorf("expected -e DOCKER_HOST=unix:///var/run/docker.sock in dood mode; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_DOCKER_MODE=dood") {
+		t.Errorf("expected -e CONSTRUCT_DOCKER_MODE=dood in args; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_DoodMode_NoNetwork verifies that DooD mode does not attach
+// a custom Docker network (the host socket is used instead of a dind sidecar).
+func TestBuildRunArgs_DoodMode_NoNetwork(t *testing.T) {
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "--network") {
+		t.Errorf("--network must not appear in dood mode; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_DindMode_NetworkAndDockerHost verifies that dind mode attaches
+// the session network and sets DOCKER_HOST to the dind sidecar.
+func TestBuildRunArgs_DindMode_NetworkAndDockerHost(t *testing.T) {
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dind",
+	}
+	d := fakeDind()
+	args := buildRunArgs(cfg, d, "testimage", "sess1", "homevol", "", "")
+
+	if !containsPair(args, "--network", d.NetworkName) {
+		t.Errorf("expected --network %s in dind mode; got: %v", d.NetworkName, args)
+	}
+	if !containsPair(args, "-e", "DOCKER_HOST=tcp://dind:2375") {
+		t.Errorf("expected -e DOCKER_HOST=tcp://dind:2375 in dind mode; got: %v", args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_DOCKER_MODE=dind") {
+		t.Errorf("expected -e CONSTRUCT_DOCKER_MODE=dind in args; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_DockerModeEnvAlwaysPresent verifies that CONSTRUCT_DOCKER_MODE
+// is always injected regardless of mode.
+func TestBuildRunArgs_DockerModeEnvAlwaysPresent(t *testing.T) {
+	for _, mode := range []string{"none", "dood", "dind"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := &Config{
+				Tool:       fakeConfig(t, nil).Tool,
+				RepoPath:   t.TempDir(),
+				DockerMode: mode,
+			}
+			var d *dind.Instance
+			if mode == "dind" {
+				d = fakeDind()
+			}
+			args := buildRunArgs(cfg, d, "testimage", "sess1", "homevol", "", "")
+			if !containsPair(args, "-e", "CONSTRUCT_DOCKER_MODE="+mode) {
+				t.Errorf("expected -e CONSTRUCT_DOCKER_MODE=%s in args; got: %v", mode, args)
+			}
+		})
 	}
 }
