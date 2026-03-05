@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need full history and the ability to push the changelog commit back.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -20,6 +23,20 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Extract changelog and update CHANGELOG.md
+        run: |
+          chmod +x .github/extract-changelog.sh
+          bash .github/extract-changelog.sh "${{ github.ref_name }}" > /tmp/release-body.md
+
+      - name: Commit updated CHANGELOG.md
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: update changelog for ${{ github.ref_name }}"
+          # Push to the default branch so the changelog update is not lost.
+          git push origin HEAD:refs/heads/main
 
       - name: Build (linux/amd64)
         run: |
@@ -40,4 +57,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: /tmp/release-body.md

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Changelog-driven release notes** — the release pipeline now extracts the
+  `## [Unreleased]` block from `CHANGELOG.md` and uses it as the GitHub
+  release body. After tagging, the changelog is automatically updated:
+  `[Unreleased]` is renamed to the tag version with today's date, and a fresh
+  empty `[Unreleased]` block is inserted above it. The commit is pushed back
+  to `main` by `github-actions[bot]`.
+
 ### Changed
 
 - Agent commits now carry the host user's real git identity instead of the
