@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [v0.6.3] — 2026-03-05
+
 ### Added
 - **Richer agent context in AGENTS.md** — the generated `~/.config/opencode/AGENTS.md` now includes a **Workspace** section (explaining that `/workspace` is the user's repo, bind-mounted and immediately visible) and an **Isolation** section (explaining that the rest of the container is isolated, and that `/home/agent` persists across sessions via a named volume).
 
