@@ -1060,3 +1060,178 @@ func TestBuildRunArgs_DockerModeEnvAlwaysPresent(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Git identity tests
+// ---------------------------------------------------------------------------
+
+// TestBuildRunArgs_GitIdentityEnvVars verifies that the four GIT_AUTHOR_* /
+// GIT_COMMITTER_* env vars are present in the run args and are non-empty.
+// When the host has no special GIT_AUTHOR_* / GIT_COMMITTER_* env vars set,
+// author and committer resolve to the same base identity.
+func TestBuildRunArgs_GitIdentityEnvVars(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	vars := []string{
+		"GIT_AUTHOR_NAME",
+		"GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME",
+		"GIT_COMMITTER_EMAIL",
+	}
+	vals := make(map[string]string)
+	for i, arg := range args {
+		if arg == "-e" && i+1 < len(args) {
+			kv := args[i+1]
+			for _, v := range vars {
+				if strings.HasPrefix(kv, v+"=") {
+					vals[v] = strings.TrimPrefix(kv, v+"=")
+				}
+			}
+		}
+	}
+	// All four vars must be present and non-empty.
+	for _, v := range vars {
+		if vals[v] == "" {
+			t.Errorf("expected non-empty -e %s=... in args; got: %v", v, args)
+		}
+	}
+}
+
+// TestHostGitIdentity_FallbackWhenMissing verifies that hostGitIdentity returns
+// the fallback values (and does not panic) when the host has no git identity.
+// We simulate this by temporarily pointing PATH to an empty dir so "git" is
+// not found.
+func TestHostGitIdentity_FallbackWhenMissing(t *testing.T) {
+	emptyDir := t.TempDir()
+	// Also clear host GIT_* env vars so they can't mask the fallback.
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
+		old := os.Getenv(k)
+		t.Cleanup(func() { os.Setenv(k, old) })
+		os.Unsetenv(k)
+	}
+	old := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", old) })
+	os.Setenv("PATH", emptyDir)
+
+	authorName, authorEmail, committerName, committerEmail := hostGitIdentity()
+	if authorName == "" {
+		t.Error("expected non-empty fallback authorName, got empty string")
+	}
+	if authorEmail == "" {
+		t.Error("expected non-empty fallback authorEmail, got empty string")
+	}
+	if committerName == "" {
+		t.Error("expected non-empty fallback committerName, got empty string")
+	}
+	if committerEmail == "" {
+		t.Error("expected non-empty fallback committerEmail, got empty string")
+	}
+}
+
+// TestHostGitIdentity_EnvVarsOverrideConfig verifies that host GIT_AUTHOR_* /
+// GIT_COMMITTER_* environment variables take precedence over git config and
+// are passed through independently, allowing author != committer.
+func TestHostGitIdentity_EnvVarsOverrideConfig(t *testing.T) {
+	overrides := map[string]string{
+		"GIT_AUTHOR_NAME":     "Alice Author",
+		"GIT_AUTHOR_EMAIL":    "alice@example.com",
+		"GIT_COMMITTER_NAME":  "Bob Committer",
+		"GIT_COMMITTER_EMAIL": "bob@example.com",
+	}
+	for k, v := range overrides {
+		old := os.Getenv(k)
+		t.Cleanup(func() { os.Setenv(k, old) })
+		os.Setenv(k, v)
+	}
+
+	authorName, authorEmail, committerName, committerEmail := hostGitIdentity()
+
+	if authorName != "Alice Author" {
+		t.Errorf("authorName = %q, want %q", authorName, "Alice Author")
+	}
+	if authorEmail != "alice@example.com" {
+		t.Errorf("authorEmail = %q, want %q", authorEmail, "alice@example.com")
+	}
+	if committerName != "Bob Committer" {
+		t.Errorf("committerName = %q, want %q", committerName, "Bob Committer")
+	}
+	if committerEmail != "bob@example.com" {
+		t.Errorf("committerEmail = %q, want %q", committerEmail, "bob@example.com")
+	}
+	// Author and committer must be distinct, proving they are read independently.
+	if authorName == committerName {
+		t.Errorf("author and committer names should differ when env vars set independently")
+	}
+}
+
+// TestHostGitIdentity_CommitterFallsBackToAuthor verifies that when only the
+// author identity is available (no GIT_COMMITTER_* env vars, no separate
+// committer config), the committer resolves to the same values as the author —
+// matching git's own behaviour.
+func TestHostGitIdentity_CommitterFallsBackToAuthor(t *testing.T) {
+	// Set author env vars but leave committer env vars unset.
+	for _, k := range []string{"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
+		old := os.Getenv(k)
+		t.Cleanup(func() { os.Setenv(k, old) })
+		os.Unsetenv(k)
+	}
+	os.Setenv("GIT_AUTHOR_NAME", "Alice Author")
+	os.Setenv("GIT_AUTHOR_EMAIL", "alice@example.com")
+	t.Cleanup(func() { os.Unsetenv("GIT_AUTHOR_NAME") })
+	t.Cleanup(func() { os.Unsetenv("GIT_AUTHOR_EMAIL") })
+
+	// Point PATH to empty dir so git config returns nothing.
+	emptyDir := t.TempDir()
+	old := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", old) })
+	os.Setenv("PATH", emptyDir)
+
+	authorName, authorEmail, committerName, committerEmail := hostGitIdentity()
+
+	if committerName != authorName {
+		t.Errorf("committerName = %q, want author fallback %q", committerName, authorName)
+	}
+	if committerEmail != authorEmail {
+		t.Errorf("committerEmail = %q, want author fallback %q", committerEmail, authorEmail)
+	}
+}
+
+// TestGeneratedEntrypoint_ContainsCommitMsgHook verifies that the generated
+// entrypoint script sets up the commit-msg hook and configures core.hooksPath.
+func TestGeneratedEntrypoint_ContainsCommitMsgHook(t *testing.T) {
+	script := generatedEntrypoint()
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"creates .githooks dir", ".githooks"},
+		{"writes commit-msg hook file", "commit-msg"},
+		{"hook appends Generated by construct trailer", "Generated by construct"},
+		{"hook is idempotent (grep check)", "grep -qF"},
+		{"sets core.hooksPath globally", "core.hooksPath"},
+		{"hook is executable", "chmod +x"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c.snippet) {
+			t.Errorf("entrypoint: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+// TestGeneratedEntrypoint_HookBeforeExec verifies the commit-msg hook setup
+// appears before the final exec line.
+func TestGeneratedEntrypoint_HookBeforeExec(t *testing.T) {
+	script := generatedEntrypoint()
+	hookIdx := strings.Index(script, "commit-msg")
+	execIdx := strings.LastIndex(script, `exec "$@"`)
+	if hookIdx == -1 {
+		t.Fatal("commit-msg hook block not found in entrypoint")
+	}
+	if execIdx == -1 {
+		t.Fatal(`exec "$@" not found in entrypoint`)
+	}
+	if hookIdx > execIdx {
+		t.Error("commit-msg hook block appears after exec line; it must come before")
+	}
+}

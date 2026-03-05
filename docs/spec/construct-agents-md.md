@@ -81,7 +81,7 @@ future iteration, the same instructions could be injected via copilot's
 
 | File | Change |
 |---|---|
-| `internal/runner/runner.go` | `CONSTRUCT=1` always injected; `generatedEntrypoint()` always writes `~/.config/opencode/AGENTS.md`, appending port rules only when `CONSTRUCT_PORTS` is set |
+| `internal/runner/runner.go` | `CONSTRUCT=1` always injected; `generatedEntrypoint()` always writes `~/.config/opencode/AGENTS.md`, appending port rules only when `CONSTRUCT_PORTS` is set; also writes git identity hook and sets `core.hooksPath` (see `docs/spec/git-identity.md`) |
 | `internal/runner/runner_test.go` | Tests updated to reflect always-present `CONSTRUCT=1` and always-present `AGENTS.md` |
 | `docs/spec/construct-agents-md.md` | This document |
 
