@@ -257,3 +257,53 @@ func TestEmbeddedDockerfiles_DotnetUIContent(t *testing.T) {
 		}
 	}
 }
+
+func TestIsValid_RubyStack(t *testing.T) {
+	if !IsValid("ruby") {
+		t.Error("IsValid(\"ruby\") = false, want true")
+	}
+}
+
+func TestEmbeddedDockerfiles_RubyExists(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/ruby/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile for ruby not found: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("embedded Dockerfile for ruby is empty")
+	}
+}
+
+func TestEmbeddedDockerfiles_RubyContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/ruby/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded ruby Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"extends construct-base", "FROM construct-base"},
+		{"installs ruby", "ruby"},
+		{"installs bundler", "bundler"},
+		{"installs jekyll", "jekyll"},
+		{"ends as agent user", "USER agent"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("ruby Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+func TestAll_ContainsRuby(t *testing.T) {
+	all := All()
+	for _, s := range all {
+		if s == "ruby" {
+			return
+		}
+	}
+	t.Errorf("All() = %v, want it to contain \"ruby\"", all)
+}

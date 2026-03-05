@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **`ruby` stack** — `construct-base` + Ruby (system package), Bundler, and Jekyll. Use `--stack ruby` for Jekyll sites and Ruby projects.
+
 ---
 
 ## [v0.5.0] — 2026-03-05

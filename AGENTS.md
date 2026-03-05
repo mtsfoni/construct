@@ -2,7 +2,15 @@
 
 ## Workflow
 
-**Tests first.** Before implementing any feature or fix, write the tests that define the expected behaviour. Only then write the code to make them pass. Run `go test ./...` to verify the full suite stays green.
+**Spec first, tests second, code third.** For any change that alters product behaviour, track progress by creating a todo list with the following steps before starting:
+
+1. **Write or update the spec** in `docs/spec/` before touching implementation code. The spec defines the intended behaviour and serves as the source of truth.
+2. **Write the tests** that encode the behaviour described in the spec.
+3. **Write the code** to make the tests pass. Run `go test ./...` to verify the full suite stays green.
+4. **Verify alignment** — after implementation, re-read the spec and confirm every stated behaviour is reflected in the code. Update the spec if the implementation diverged for good reason; do not leave spec and code contradicting each other.
+5. **Update `CHANGELOG.md`** — add an entry under `## [Unreleased]` for every change that is significant to the user (new commands, new flags, new stacks/tools, changed defaults, bug fixes, behaviour changes). Internal refactors with no user-visible effect do not need an entry.
+
+Mark each todo complete as you finish it. Do not move on to the next step until the current one is done.
 
 ## Build & test
 
@@ -45,7 +53,7 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 
 ## Key conventions
 
-**Any change that alters product behaviour** (new commands, new flags, new stacks/tools, changed defaults, new persistence) **must be accompanied by a spec document** in `docs/spec/` and an entry in `CHANGELOG.md` under `## [Unreleased]`. Name the file after the feature (e.g. `docs/spec/quickstart-qs.md`). The spec should cover: the problem, the solution/behaviour, persistence details if applicable, and a table of files changed.
+**Any change that alters product behaviour** (new commands, new flags, new stacks/tools, changed defaults, new persistence) **must follow the workflow above**: spec first, then tests, then code, then alignment check, then changelog. Name the spec file after the feature (e.g. `docs/spec/quickstart-qs.md`). The spec should cover: the problem, the solution/behaviour, persistence details if applicable, and a table of files changed.
 
 **Adding a new tool** — create a new file in `internal/tools/` that calls `register(&Tool{...})` in `init()`. No other registration is needed.
 

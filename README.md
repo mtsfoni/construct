@@ -69,7 +69,7 @@ construct --tool opencode --stack go --docker dind .
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
-| `--stack` | `base` | Language stack: `base`, `dotnet`, `dotnet-big`, `dotnet-big-ui`, `dotnet-ui`, `go`, `ui` |
+| `--stack` | `base` | Language stack: `base`, `dotnet`, `dotnet-big`, `dotnet-big-ui`, `dotnet-ui`, `go`, `ruby`, `ui` |
 | `--docker` | `none` | Docker access mode: `none` (no Docker), `dood` (share host socket), `dind` (isolated Docker-in-Docker sidecar) |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
 | `--reset` | `false` | Wipe and re-seed the per-repo agent home volume before starting. Does **not** affect the global auth volume. |
@@ -104,6 +104,7 @@ construct qs [path]
 | `dotnet-big-ui` | dotnet-big | `@playwright/mcp`, Chromium |
 | `dotnet-ui` | dotnet | `@playwright/mcp`, Chromium |
 | `go` | base | Go 1.24 |
+| `ruby` | base | Ruby (system), Bundler, Jekyll |
 | `ui` | base | `@playwright/mcp`, Chromium |
 
 ## Auth / config
