@@ -43,8 +43,8 @@ body=$(awk '
 ' "$CHANGELOG")
 
 if [[ -z "$(echo "$body" | tr -d '[:space:]-')" ]]; then
-  echo "error: no content found under ## [Unreleased] in $CHANGELOG" >&2
-  exit 1
+  # Nothing meaningful under [Unreleased]; skip rewrite and emit nothing.
+  exit 0
 fi
 
 # Trim leading/trailing blank lines and trailing horizontal rules (---) that

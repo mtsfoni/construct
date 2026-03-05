@@ -25,11 +25,20 @@ jobs:
         run: go test ./...
 
       - name: Extract changelog and update CHANGELOG.md
+        id: changelog
         run: |
           chmod +x .github/extract-changelog.sh
           bash .github/extract-changelog.sh "${{ github.ref_name }}" > /tmp/release-body.md
+          # Signal whether the script produced content (non-empty body).
+          if [[ -s /tmp/release-body.md ]]; then
+            echo "has_body=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_body=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Commit updated CHANGELOG.md
+        # Only run when the script actually rewrote the changelog.
+        if: steps.changelog.outputs.has_body == 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -57,4 +66,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          body_path: /tmp/release-body.md
+          body_path: ${{ steps.changelog.outputs.has_body == 'true' && '/tmp/release-body.md' || '' }}
