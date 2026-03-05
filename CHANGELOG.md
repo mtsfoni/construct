@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [v0.6.0] — 2026-03-05
+
 ### Added
 - **`ruby` stack** — `construct-base` + Ruby (system package), Bundler, and Jekyll. Use `--stack ruby` for Jekyll sites and Ruby projects.
 - **`ruby-ui` stack** — `construct-ruby` + `@playwright/mcp` + Chromium. Use `--stack ruby-ui --mcp` for Jekyll/Ruby projects that also need browser automation.
