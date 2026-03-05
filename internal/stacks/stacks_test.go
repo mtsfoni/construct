@@ -307,3 +307,62 @@ func TestAll_ContainsRuby(t *testing.T) {
 	}
 	t.Errorf("All() = %v, want it to contain \"ruby\"", all)
 }
+
+func TestIsValid_RubyUIStack(t *testing.T) {
+	if !IsValid("ruby-ui") {
+		t.Error("IsValid(\"ruby-ui\") = false, want true")
+	}
+}
+
+func TestStackDeps_RubyUIHasBaseAndRuby(t *testing.T) {
+	deps, ok := stackDeps["ruby-ui"]
+	if !ok {
+		t.Fatal("stackDeps[\"ruby-ui\"] not set")
+	}
+	if len(deps) != 2 || deps[0] != "base" || deps[1] != "ruby" {
+		t.Errorf("stackDeps[\"ruby-ui\"] = %v, want [\"base\", \"ruby\"]", deps)
+	}
+}
+
+func TestEmbeddedDockerfiles_RubyUIExists(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/ruby-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("embedded Dockerfile for ruby-ui not found: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("embedded Dockerfile for ruby-ui is empty")
+	}
+}
+
+func TestEmbeddedDockerfiles_RubyUIContent(t *testing.T) {
+	data, err := dockerfiles.ReadFile("dockerfiles/ruby-ui/Dockerfile")
+	if err != nil {
+		t.Fatalf("read embedded ruby-ui Dockerfile: %v", err)
+	}
+	content := string(data)
+
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"extends construct-ruby", "FROM construct-ruby"},
+		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
+		{"installs Chromium via playwright cli", "playwright install"},
+		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(content, c.snippet) {
+			t.Errorf("ruby-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+func TestAll_ContainsRubyUI(t *testing.T) {
+	all := All()
+	for _, s := range all {
+		if s == "ruby-ui" {
+			return
+		}
+	}
+	t.Errorf("All() = %v, want it to contain \"ruby-ui\"", all)
+}

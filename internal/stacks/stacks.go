@@ -13,13 +13,14 @@ import (
 var dockerfiles embed.FS
 
 // validStacks is the ordered list of supported stack names.
-var validStacks = []string{"base", "dotnet", "dotnet-big", "dotnet-big-ui", "dotnet-ui", "go", "ruby", "ui"}
+var validStacks = []string{"base", "dotnet", "dotnet-big", "dotnet-big-ui", "dotnet-ui", "go", "ruby", "ruby-ui", "ui"}
 
 // stackDeps maps a stack name to the ordered list of prerequisite stack images
 // that must be present before that stack can be built.
 var stackDeps = map[string][]string{
 	"dotnet-big-ui": {"base", "dotnet-big"},
 	"dotnet-ui":     {"base", "dotnet"},
+	"ruby-ui":       {"base", "ruby"},
 	"ui":            {"base"},
 }
 
