@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/mtsfoni/construct/internal/buildinfo"
 	"github.com/mtsfoni/construct/internal/dind"
 	"github.com/mtsfoni/construct/internal/stacks"
 	"github.com/mtsfoni/construct/internal/tools"
@@ -56,7 +57,7 @@ func Run(cfg *Config) error {
 
 	// 2. Ensure the tool image (derived from the stack) exists.
 	toolImage := stacks.ImageName(cfg.Stack) + "-" + cfg.Tool.Name
-	if cfg.Rebuild || !toolImageExists(toolImage) {
+	if cfg.Rebuild || !toolImageExists(toolImage) || !toolImageVersionCurrent(toolImage) {
 		if err := buildToolImage(toolImage, stacks.ImageName(cfg.Stack), cfg.Tool); err != nil {
 			return fmt.Errorf("build tool image: %w", err)
 		}
@@ -320,9 +321,45 @@ func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
 	}
 
 	cmd := exec.Command("docker", "build", "-t", toolImage, dir)
+	if buildinfo.Version != "" {
+		cmd = exec.Command("docker", "build",
+			"--label", "io.construct.version="+buildinfo.Version,
+			"-t", toolImage, dir)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// toolImageLabel is the function used to retrieve a Docker image label value
+// for tool images. It is a variable so tests can substitute a fake without
+// shelling out to Docker. Returns ("", error) when the image is not found.
+var toolImageLabel = func(imageName, label string) (string, error) {
+	out, err := exec.Command(
+		"docker", "image", "inspect",
+		"--format", `{{index .Config.Labels "`+label+`"}}`,
+		imageName,
+	).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// toolImageVersionCurrent returns true when the named tool image carries an
+// io.construct.version label matching the running binary's version, or when
+// buildinfo.Version is empty (dev build — skip the check).
+// Returns false when the image was built by a different version or predates
+// this feature (no label), triggering an automatic rebuild.
+func toolImageVersionCurrent(name string) bool {
+	if buildinfo.Version == "" {
+		return true // dev build: never force a rebuild based on version
+	}
+	got, err := toolImageLabel(name, "io.construct.version")
+	if err != nil {
+		return false // image not found or inspect failed — treat as stale
+	}
+	return got == buildinfo.Version
 }
 
 // generatedEntrypoint returns the shell script baked into every tool image as

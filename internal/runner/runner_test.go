@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mtsfoni/construct/internal/buildinfo"
 	"github.com/mtsfoni/construct/internal/dind"
 	"github.com/mtsfoni/construct/internal/tools"
 )
@@ -1307,5 +1309,99 @@ func TestGeneratedEntrypoint_HookBeforeExec(t *testing.T) {
 	}
 	if hookIdx > execIdx {
 		t.Error("commit-msg hook block appears after exec line; it must come before")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// toolImageVersionCurrent tests
+// ---------------------------------------------------------------------------
+
+// stubToolImageLabel replaces toolImageLabel for the duration of a test.
+func stubToolImageLabel(t *testing.T, fn func(imageName, label string) (string, error)) {
+	t.Helper()
+	orig := toolImageLabel
+	toolImageLabel = fn
+	t.Cleanup(func() { toolImageLabel = orig })
+}
+
+// stubVersion sets buildinfo.Version for the duration of a test and restores it.
+func stubVersion(t *testing.T, v string) {
+	t.Helper()
+	orig := buildinfo.Version
+	buildinfo.Version = v
+	t.Cleanup(func() { buildinfo.Version = orig })
+}
+
+func TestToolImageVersionCurrent_DevBuild_AlwaysTrue(t *testing.T) {
+	stubVersion(t, "")
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		return "v9.9.9", nil
+	})
+
+	if !toolImageVersionCurrent("any-tool-image") {
+		t.Error("expected true for dev build (empty version), got false")
+	}
+}
+
+func TestToolImageVersionCurrent_MatchingVersion_ReturnsTrue(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		return "v1.2.3", nil
+	})
+
+	if !toolImageVersionCurrent("construct-base-opencode") {
+		t.Error("expected true when label matches binary version, got false")
+	}
+}
+
+func TestToolImageVersionCurrent_DifferentVersion_ReturnsFalse(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		return "v1.0.0", nil
+	})
+
+	if toolImageVersionCurrent("construct-base-opencode") {
+		t.Error("expected false when label differs from binary version, got true")
+	}
+}
+
+func TestToolImageVersionCurrent_NoLabel_ReturnsFalse(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		return "", nil
+	})
+
+	if toolImageVersionCurrent("construct-base-opencode") {
+		t.Error("expected false when image has no version label, got true")
+	}
+}
+
+func TestToolImageVersionCurrent_InspectError_ReturnsFalse(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		return "", errors.New("docker: image not found")
+	})
+
+	if toolImageVersionCurrent("construct-base-opencode") {
+		t.Error("expected false when inspect returns error, got true")
+	}
+}
+
+func TestToolImageVersionCurrent_PassesCorrectArgs(t *testing.T) {
+	stubVersion(t, "v2.0.0")
+	var gotImage, gotLabel string
+	stubToolImageLabel(t, func(imageName, label string) (string, error) {
+		gotImage = imageName
+		gotLabel = label
+		return "v2.0.0", nil
+	})
+
+	toolImageVersionCurrent("construct-go-opencode")
+
+	if gotImage != "construct-go-opencode" {
+		t.Errorf("toolImageLabel called with image %q, want %q", gotImage, "construct-go-opencode")
+	}
+	if gotLabel != "io.construct.version" {
+		t.Errorf("toolImageLabel called with label %q, want %q", gotLabel, "io.construct.version")
 	}
 }

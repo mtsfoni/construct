@@ -9,15 +9,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mtsfoni/construct/internal/buildinfo"
 	"github.com/mtsfoni/construct/internal/config"
 	"github.com/mtsfoni/construct/internal/runner"
 	"github.com/mtsfoni/construct/internal/stacks"
 	"github.com/mtsfoni/construct/internal/tools"
 )
-
-// version is set at build time via -ldflags "-X main.version=<tag>".
-// It is empty when built without ldflags (e.g. go build ./...).
-var version string
 
 // portFlag is a repeatable --port flag value. Each call to Set appends one
 // "host:container" (or bare "port") mapping, allowing:
@@ -33,7 +30,7 @@ func (p *portFlag) Set(v string) error {
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
-		v := version
+		v := buildinfo.Version
 		if v == "" {
 			v = "dev"
 		}

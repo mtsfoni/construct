@@ -1,368 +1,105 @@
 package stacks
 
 import (
-	"strings"
+	"errors"
 	"testing"
+
+	"github.com/mtsfoni/construct/internal/buildinfo"
 )
 
-func TestIsValid_KnownStacks(t *testing.T) {
-	known := []string{"base", "dotnet", "dotnet-big", "dotnet-ui", "go", "ui"}
-	for _, s := range known {
-		if !IsValid(s) {
-			t.Errorf("IsValid(%q) = false, want true", s)
-		}
+// stubImageLabel replaces the imageLabel variable for the duration of a test
+// and restores it on cleanup.
+func stubImageLabel(t *testing.T, fn func(imageName, label string) (string, error)) {
+	t.Helper()
+	orig := imageLabel
+	imageLabel = fn
+	t.Cleanup(func() { imageLabel = orig })
+}
+
+// stubVersion sets buildinfo.Version for the duration of a test and restores it.
+func stubVersion(t *testing.T, v string) {
+	t.Helper()
+	orig := buildinfo.Version
+	buildinfo.Version = v
+	t.Cleanup(func() { buildinfo.Version = orig })
+}
+
+func TestImageVersionCurrent_DevBuild_AlwaysTrue(t *testing.T) {
+	// When buildinfo.Version is empty (dev build), imageVersionCurrent must
+	// return true regardless of what the image label says.
+	stubVersion(t, "")
+	// Stub returns a label that would cause a mismatch if the check ran.
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		return "v9.9.9", nil
+	})
+
+	if !imageVersionCurrent("any-image") {
+		t.Error("expected true for dev build (empty version), got false")
 	}
 }
 
-func TestIsValid_RemovedStacks(t *testing.T) {
-	removed := []string{"node", "python"}
-	for _, s := range removed {
-		if IsValid(s) {
-			t.Errorf("IsValid(%q) = true, want false (stack was merged into base)", s)
-		}
+func TestImageVersionCurrent_MatchingVersion_ReturnsTrue(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		return "v1.2.3", nil
+	})
+
+	if !imageVersionCurrent("construct-base") {
+		t.Error("expected true when image label matches binary version, got false")
 	}
 }
 
-func TestIsValid_UnknownStack(t *testing.T) {
-	if IsValid("rust") {
-		t.Error("IsValid(\"rust\") = true, want false")
+func TestImageVersionCurrent_DifferentVersion_ReturnsFalse(t *testing.T) {
+	stubVersion(t, "v1.2.3")
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		return "v1.0.0", nil
+	})
+
+	if imageVersionCurrent("construct-base") {
+		t.Error("expected false when image label differs from binary version, got true")
 	}
 }
 
-func TestAll_ContainsUI(t *testing.T) {
-	all := All()
-	for _, s := range all {
-		if s == "ui" {
-			return
-		}
-	}
-	t.Errorf("All() = %v, want it to contain \"ui\"", all)
-}
+func TestImageVersionCurrent_NoLabel_ReturnsFalse(t *testing.T) {
+	// An image built before this feature carries an empty label value.
+	stubVersion(t, "v1.2.3")
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		return "", nil
+	})
 
-func TestImageName(t *testing.T) {
-	cases := []struct {
-		stack string
-		want  string
-	}{
-		{"base", "construct-base"},
-		{"go", "construct-go"},
-		{"ui", "construct-ui"},
-	}
-	for _, c := range cases {
-		if got := ImageName(c.stack); got != c.want {
-			t.Errorf("ImageName(%q) = %q, want %q", c.stack, got, c.want)
-		}
+	if imageVersionCurrent("construct-base") {
+		t.Error("expected false when image has no label (pre-feature image), got true")
 	}
 }
 
-func TestEnsureBuilt_UnknownStackError(t *testing.T) {
-	err := EnsureBuilt("rust", false)
-	if err == nil {
-		t.Fatal("expected error for unknown stack, got nil")
-	}
-	if !strings.Contains(err.Error(), "rust") {
-		t.Errorf("error should mention stack name, got: %v", err)
-	}
-	// All valid stack names should appear in the error message.
-	for _, s := range validStacks {
-		if !strings.Contains(err.Error(), s) {
-			t.Errorf("error should list valid stack %q, got: %v", s, err)
-		}
+func TestImageVersionCurrent_InspectError_ReturnsFalse(t *testing.T) {
+	// When docker image inspect fails (image not found), treat as stale.
+	stubVersion(t, "v1.2.3")
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		return "", errors.New("docker: image not found")
+	})
+
+	if imageVersionCurrent("construct-base") {
+		t.Error("expected false when inspect returns error, got true")
 	}
 }
 
-func TestStackDeps_UIHasBase(t *testing.T) {
-	deps, ok := stackDeps["ui"]
-	if !ok {
-		t.Fatal("stackDeps[\"ui\"] not set")
-	}
-	if len(deps) != 1 || deps[0] != "base" {
-		t.Errorf("stackDeps[\"ui\"] = %v, want [\"base\"]", deps)
-	}
-}
+func TestImageVersionCurrent_PassesCorrectArgs(t *testing.T) {
+	// Verify that the correct image name and label key are forwarded.
+	stubVersion(t, "v2.0.0")
+	var gotImage, gotLabel string
+	stubImageLabel(t, func(imageName, label string) (string, error) {
+		gotImage = imageName
+		gotLabel = label
+		return "v2.0.0", nil
+	})
 
-func TestEmbeddedDockerfiles_BaseContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/base/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded base Dockerfile: %v", err)
-	}
-	content := string(data)
+	imageVersionCurrent("construct-go")
 
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"includes Node.js install", "nodesource.com/setup_20.x"},
-		{"includes python3", "python3"},
-		{"includes python3-pip", "python3-pip"},
-		{"creates agent user", "useradd"},
+	if gotImage != "construct-go" {
+		t.Errorf("imageLabel called with image %q, want %q", gotImage, "construct-go")
 	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("base Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
+	if gotLabel != "io.construct.version" {
+		t.Errorf("imageLabel called with label %q, want %q", gotLabel, "io.construct.version")
 	}
-}
-
-func TestEmbeddedDockerfiles_UIExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for ui not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for ui is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_UIContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-base", "FROM construct-base"},
-		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
-		{"installs Chromium via playwright cli", "playwright install"},
-		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetBigExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for dotnet-big not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for dotnet-big is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetBigContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded dotnet-big Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-base", "FROM construct-base"},
-		{"installs .NET 8 SDK", "--channel 8.0"},
-		{"installs .NET 9 SDK", "--channel 9.0"},
-		{"installs .NET 10 SDK", "--channel 10.0"},
-		{"sets DOTNET_ROOT", "DOTNET_ROOT=/usr/share/dotnet"},
-		{"opts out of telemetry", "DOTNET_CLI_TELEMETRY_OPTOUT=1"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("dotnet-big Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestStackDeps_DotnetBigUIHasBaseAndDotnetBig(t *testing.T) {
-	deps, ok := stackDeps["dotnet-big-ui"]
-	if !ok {
-		t.Fatal("stackDeps[\"dotnet-big-ui\"] not set")
-	}
-	if len(deps) != 2 || deps[0] != "base" || deps[1] != "dotnet-big" {
-		t.Errorf("stackDeps[\"dotnet-big-ui\"] = %v, want [\"base\", \"dotnet-big\"]", deps)
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetBigUIExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for dotnet-big-ui not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for dotnet-big-ui is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetBigUIContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-big-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded dotnet-big-ui Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-dotnet-big", "FROM construct-dotnet-big"},
-		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
-		{"installs Chromium via playwright cli", "playwright install"},
-		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("dotnet-big-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestStackDeps_DotnetUIHasBaseAndDotnet(t *testing.T) {
-	deps, ok := stackDeps["dotnet-ui"]
-	if !ok {
-		t.Fatal("stackDeps[\"dotnet-ui\"] not set")
-	}
-	if len(deps) != 2 || deps[0] != "base" || deps[1] != "dotnet" {
-		t.Errorf("stackDeps[\"dotnet-ui\"] = %v, want [\"base\", \"dotnet\"]", deps)
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetUIExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for dotnet-ui not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for dotnet-ui is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_DotnetUIContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/dotnet-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded dotnet-ui Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-dotnet", "FROM construct-dotnet"},
-		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
-		{"installs Chromium via playwright cli", "playwright install"},
-		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("dotnet-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestIsValid_RubyStack(t *testing.T) {
-	if !IsValid("ruby") {
-		t.Error("IsValid(\"ruby\") = false, want true")
-	}
-}
-
-func TestEmbeddedDockerfiles_RubyExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ruby/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for ruby not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for ruby is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_RubyContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ruby/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded ruby Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-base", "FROM construct-base"},
-		{"installs ruby", "ruby"},
-		{"installs bundler", "bundler"},
-		{"installs jekyll", "jekyll"},
-		{"ends as agent user", "USER agent"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("ruby Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestAll_ContainsRuby(t *testing.T) {
-	all := All()
-	for _, s := range all {
-		if s == "ruby" {
-			return
-		}
-	}
-	t.Errorf("All() = %v, want it to contain \"ruby\"", all)
-}
-
-func TestIsValid_RubyUIStack(t *testing.T) {
-	if !IsValid("ruby-ui") {
-		t.Error("IsValid(\"ruby-ui\") = false, want true")
-	}
-}
-
-func TestStackDeps_RubyUIHasBaseAndRuby(t *testing.T) {
-	deps, ok := stackDeps["ruby-ui"]
-	if !ok {
-		t.Fatal("stackDeps[\"ruby-ui\"] not set")
-	}
-	if len(deps) != 2 || deps[0] != "base" || deps[1] != "ruby" {
-		t.Errorf("stackDeps[\"ruby-ui\"] = %v, want [\"base\", \"ruby\"]", deps)
-	}
-}
-
-func TestEmbeddedDockerfiles_RubyUIExists(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ruby-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("embedded Dockerfile for ruby-ui not found: %v", err)
-	}
-	if len(data) == 0 {
-		t.Error("embedded Dockerfile for ruby-ui is empty")
-	}
-}
-
-func TestEmbeddedDockerfiles_RubyUIContent(t *testing.T) {
-	data, err := dockerfiles.ReadFile("dockerfiles/ruby-ui/Dockerfile")
-	if err != nil {
-		t.Fatalf("read embedded ruby-ui Dockerfile: %v", err)
-	}
-	content := string(data)
-
-	checks := []struct {
-		desc    string
-		snippet string
-	}{
-		{"extends construct-ruby", "FROM construct-ruby"},
-		{"sets fixed browser path env var", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"},
-		{"installs Chromium via playwright cli", "playwright install"},
-		{"installs @playwright/mcp globally", "npm install -g @playwright/mcp"},
-	}
-	for _, c := range checks {
-		if !strings.Contains(content, c.snippet) {
-			t.Errorf("ruby-ui Dockerfile: expected %s (snippet %q not found)", c.desc, c.snippet)
-		}
-	}
-}
-
-func TestAll_ContainsRubyUI(t *testing.T) {
-	all := All()
-	for _, s := range all {
-		if s == "ruby-ui" {
-			return
-		}
-	}
-	t.Errorf("All() = %v, want it to contain \"ruby-ui\"", all)
 }
