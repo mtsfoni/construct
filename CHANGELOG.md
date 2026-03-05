@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [v0.5.0] — 2026-03-05
+
 ### Added
 
 - **Changelog-driven release notes** — the release pipeline now extracts the
