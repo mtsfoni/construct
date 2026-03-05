@@ -400,6 +400,20 @@ func generatedEntrypoint() string {
 		"# Construct container context\n" +
 		"\n" +
 		"You are running inside a construct container.\n" +
+		"\n" +
+		"## Workspace\n" +
+		"\n" +
+		"`/workspace` is the user's repository, bind-mounted from their machine.\n" +
+		"Changes you make there are immediately visible to the user.\n" +
+		"This is the only directory shared with the user.\n" +
+		"\n" +
+		"## Isolation\n" +
+		"\n" +
+		"Everything outside `/workspace` is isolated inside the container.\n" +
+		"Your home directory (`/home/agent`) persists across sessions via a named Docker\n" +
+		"volume, so shell history, tool caches, and config files survive container\n" +
+		"restarts. The user's machine is separate — you cannot reach their localhost and\n" +
+		"they cannot reach yours.\n" +
 		"AGENTSEOF\n" +
 		"if [ \"${CONSTRUCT_DOCKER_MODE}\" = \"dind\" ]; then\n" +
 		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +

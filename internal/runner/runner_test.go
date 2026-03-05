@@ -802,6 +802,10 @@ func TestGeneratedEntrypoint_ContainsConstructAgentsBlock(t *testing.T) {
 		{"instructs agent to bind to 0.0.0.0", "0.0.0.0"},
 		{"mentions CONSTRUCT_PORTS", "CONSTRUCT_PORTS"},
 		{"conditionally appends port rules when CONSTRUCT_PORTS set", "if [ -n \"${CONSTRUCT_PORTS}\" ]"},
+		{"mentions /workspace as shared directory", "/workspace"},
+		{"explains workspace is bind-mounted from user machine", "bind-mounted"},
+		{"describes container isolation", "isolated"},
+		{"mentions home dir persistence", "/home/agent"},
 	}
 	for _, c := range checks {
 		if !strings.Contains(script, c.snippet) {
@@ -833,6 +837,32 @@ func TestGeneratedEntrypoint_ConstructBlockBeforeExec(t *testing.T) {
 	}
 	if agentsMdIdx > execIdx {
 		t.Error("AGENTS.md block appears after exec line; it must come before")
+	}
+}
+
+// TestGeneratedEntrypoint_AgentsMD_WorkspaceAndIsolationContent verifies that
+// the generated entrypoint script includes the workspace and isolation sections
+// in the AGENTS.md heredoc.
+func TestGeneratedEntrypoint_AgentsMD_WorkspaceAndIsolationContent(t *testing.T) {
+	script := generatedEntrypoint()
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"workspace section header", "## Workspace"},
+		{"mentions /workspace path", "`/workspace`"},
+		{"explains workspace is bind-mounted", "bind-mounted from their machine"},
+		{"notes workspace is the only shared directory", "only directory shared with the user"},
+		{"isolation section header", "## Isolation"},
+		{"explains container isolation", "isolated inside the container"},
+		{"mentions home dir path", "`/home/agent`"},
+		{"explains home dir persistence", "persists across sessions"},
+		{"notes user machine is separate", "user's machine is separate"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c.snippet) {
+			t.Errorf("entrypoint AGENTS.md: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
 	}
 }
 

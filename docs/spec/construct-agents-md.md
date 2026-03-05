@@ -32,7 +32,23 @@ The entrypoint writes `~/.config/opencode/AGENTS.md` with at minimum:
 # Construct container context
 
 You are running inside a construct container.
+
+## Workspace
+
+`/workspace` is the user's repository, bind-mounted from their machine.
+Changes you make there are immediately visible to the user.
+This is the only directory shared with the user.
+
+## Isolation
+
+Everything outside `/workspace` is isolated inside the container.
+Your home directory (`/home/agent`) persists across sessions via a named Docker
+volume, so shell history, tool caches, and config files survive container
+restarts. The user's machine is separate — you cannot reach their localhost and
+they cannot reach yours.
 ```
+
+The networking section (see below) is appended after this block.
 
 ### When `--port` is used (`CONSTRUCT_PORTS` is set)
 
