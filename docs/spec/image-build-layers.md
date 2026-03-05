@@ -24,9 +24,11 @@ Dockerfile from `internal/stacks/dockerfiles/<stack>/Dockerfile` and runs
 | `construct-go` | `construct-base` | Go 1.24 at `/usr/local/go` |
 | `construct-dotnet` | `construct-base` | .NET 10 SDK |
 | `construct-dotnet-big` | `construct-base` | .NET 8, 9, and 10 SDKs |
+| `construct-ruby` | `construct-base` | Ruby (system), Bundler, Jekyll |
 | `construct-ui` | `construct-base` | `@playwright/mcp` (global), Chromium at `/ms-playwright` |
 | `construct-dotnet-ui` | `construct-dotnet` | `@playwright/mcp` (global), Chromium at `/ms-playwright` |
 | `construct-dotnet-big-ui` | `construct-dotnet-big` | `@playwright/mcp` (global), Chromium at `/ms-playwright` |
+| `construct-ruby-ui` | `construct-ruby` | `@playwright/mcp` (global), Chromium at `/ms-playwright` |
 
 **Dependency chain** — `stackDeps` in `stacks.go` ensures parents are built
 before children:
@@ -39,6 +41,8 @@ construct-base
        └─ construct-dotnet-ui
   └─ construct-dotnet-big
        └─ construct-dotnet-big-ui
+  └─ construct-ruby
+       └─ construct-ruby-ui
 ```
 
 **What stack images do NOT contain:**

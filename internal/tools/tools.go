@@ -1,6 +1,10 @@
 package tools
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // Tool defines how an AI coding tool is installed, configured, and invoked inside the agent container.
 type Tool struct {
@@ -35,9 +39,16 @@ func register(t *Tool) {
 func Get(name string) (*Tool, error) {
 	t, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown tool %q; supported tools: copilot, opencode", name)
+		return nil, fmt.Errorf("unknown tool %q; supported tools: %s", name, knownTools())
 	}
 	return t, nil
+}
+
+// knownTools returns a sorted, comma-separated list of registered tool names.
+func knownTools() string {
+	names := All()
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // All returns a slice of every registered tool name.

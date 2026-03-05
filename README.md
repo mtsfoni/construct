@@ -76,6 +76,7 @@ construct --tool opencode --stack go --docker dind .
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
 | `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui`, `--stack dotnet-ui`, `--stack dotnet-big-ui`, or `--stack ruby-ui` for browser automation |
 | `--port` | *(none)* | Publish a container port to the host (repeatable). Accepts any format `docker run -p` supports: `3000`, `9000:3000`, `127.0.0.1:3000:3000`. |
+| `--version` | — | Print the construct version and exit. |
 
 ## Quickstart (`qs`)
 

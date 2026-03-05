@@ -50,16 +50,12 @@ expectations.
 
 ## Agent awareness
 
-For an agent to make use of these env vars it needs context. The recommended
-approach (not yet implemented) is to add a system-prompt note via opencode's
-`instructions` config field or a seeded `AGENTS.md` in the home volume:
-
-```
-If CONSTRUCT=1 is set, you are running inside a construct container.
-Bind any servers to 0.0.0.0 (not 127.0.0.1).
-Use the port numbers in CONSTRUCT_PORTS.
-Print a clear message when the server is ready so the user knows to open their browser.
-```
+When `--port` is used, the entrypoint script injects a section into
+`~/.config/opencode/AGENTS.md` that instructs the agent to bind dev servers to
+`0.0.0.0` (not `127.0.0.1`) and to use the port numbers listed in
+`$CONSTRUCT_PORTS`. This note is written automatically on every container start
+by `generatedEntrypoint()` in `internal/runner/runner.go` — no user action is
+required. See `docs/spec/construct-agents-md.md` for details.
 
 ## Network topology note
 

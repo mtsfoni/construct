@@ -6,6 +6,11 @@
 - **`ruby` stack** — `construct-base` + Ruby (system package), Bundler, and Jekyll. Use `--stack ruby` for Jekyll sites and Ruby projects.
 - **`ruby-ui` stack** — `construct-ruby` + `@playwright/mcp` + Chromium. Use `--stack ruby-ui --mcp` for Jekyll/Ruby projects that also need browser automation.
 - **Global opencode slash commands** — when `~/.config/opencode/commands/` exists on the host, it is automatically bind-mounted read-only into the opencode agent container. Custom slash commands defined globally on the host are now available inside the container without any extra flags.
+- **`--version` flag** — prints the construct version (e.g. `construct v0.6.0`) and exits. Reports `construct dev` when built without ldflags.
+- **ARM64 support for the `go` stack** — the `go` stack Dockerfile now uses `TARGETARCH` to select the correct Go tarball, so `construct-go` builds correctly on both `linux/amd64` and `linux/arm64` hosts.
+
+### Fixed
+- **`--stack` default corrected to `base`** — the default was incorrectly left as `node` (a stack removed in v0.3.0), which would cause an error for users who omitted `--stack`. It now correctly defaults to `base`.
 
 ---
 

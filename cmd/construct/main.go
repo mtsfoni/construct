@@ -15,6 +15,10 @@ import (
 	"github.com/mtsfoni/construct/internal/tools"
 )
 
+// version is set at build time via -ldflags "-X main.version=<tag>".
+// It is empty when built without ldflags (e.g. go build ./...).
+var version string
+
 // portFlag is a repeatable --port flag value. Each call to Set appends one
 // "host:container" (or bare "port") mapping, allowing:
 //
@@ -28,6 +32,14 @@ func (p *portFlag) Set(v string) error {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
+		v := version
+		if v == "" {
+			v = "dev"
+		}
+		fmt.Println("construct " + v)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "config" {
 		runConfig(os.Args[2:])
 		return
@@ -47,7 +59,7 @@ func runAgent(args []string) {
 
 	fs := flag.NewFlagSet("construct", flag.ExitOnError)
 	toolName := fs.String("tool", "", "AI tool to run: "+strings.Join(allTools, ", "))
-	stackName := fs.String("stack", "node", "Stack image to use: "+strings.Join(allStacks, ", "))
+	stackName := fs.String("stack", "base", "Stack image to use: "+strings.Join(allStacks, ", "))
 	rebuild := fs.Bool("rebuild", false, "Force rebuild of the stack and tool images")
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
@@ -61,6 +73,8 @@ func runAgent(args []string) {
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
+		fmt.Fprintf(os.Stderr, "Other flags:\n")
+		fmt.Fprintf(os.Stderr, "  --version  Print the construct version and exit\n\n")
 		fmt.Fprintf(os.Stderr, "Available tools:\n")
 		for _, t := range allTools {
 			fmt.Fprintf(os.Stderr, "  %s\n", t)
