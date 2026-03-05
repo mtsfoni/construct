@@ -19,13 +19,17 @@ hardened sandbox; it is a meaningful step up from that baseline.
 
 ## Trust boundaries
 
+The trust boundary diagram below shows the **`--docker dind`** mode (the most
+expansive configuration). In `--docker none` (no inner daemon) and `--docker dood`
+(Docker-outside-of-Docker) the layout differs — see the notes beneath the diagram.
+
 ```
 ┌─ Host ──────────────────────────────────────────────────────────────┐
 │  ~/.construct/.env (credentials)                                    │
 │  ~/projects/myrepo/  (workspace)                                    │
 │  /var/run/docker.sock (outer Docker daemon)                         │
 │                                                                     │
-│  ┌─ Isolated bridge network ─────────────────────────────────────┐  │
+│  ┌─ Isolated bridge network (dind mode only) ────────────────────┐  │
 │  │                                                               │  │
 │  │  ┌─ agent container ─────────────────┐  ┌─ dind sidecar ──┐   │  │
 │  │  │  AI tool (copilot / opencode)     │  │  inner dockerd  │   │  │
@@ -37,22 +41,32 @@ hardened sandbox; it is a meaningful step up from that baseline.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**`--docker none`** — no dind sidecar is started, no bridge network is created,
+and no `DOCKER_HOST` is set. The agent has no access to any Docker daemon.
+
+**`--docker dood`** — no dind sidecar. Instead, `/var/run/docker.sock` is
+bind-mounted into the agent container and `DOCKER_HOST` is set to
+`unix:///var/run/docker.sock`. The agent talks directly to the **host** Docker
+daemon (see T9 below).
+
 The agent container has access to:
 
 - The **workspace repo** (read/write bind-mount) — intentional; this is why you
   run the agent.
 - **Credentials** for the AI tool via `/run/secrets` — intentional; the tool
   needs them to call the LLM API.
-- The **inner Docker daemon** (dind) — intentional; the agent needs Docker to
-  build and run containers as part of its work.
+- A **Docker daemon** — present only in `--docker dind` (inner daemon) and
+  `--docker dood` (host daemon). Not present in `--docker none`.
 - A **persistent home volume** — intentional; preserves shell history, tool
   caches, and config across sessions.
 
 The agent does **not** have access to:
 
-- The host's outer Docker daemon or any existing host containers/images.
+- The host's outer Docker daemon or any existing host containers/images — except
+  in `--docker dood`, where this is explicitly opted into.
 - Any part of the host filesystem outside the workspace repo.
-- Other network interfaces on the host (isolated bridge network only).
+- Other network interfaces on the host (isolated bridge network only, in `dind`
+  mode; no dedicated network in `dood` / `none` modes).
 
 ---
 
@@ -74,9 +88,9 @@ The agent does **not** have access to:
 | | |
 |---|---|
 | **Scenario** | A vulnerability in the container runtime, kernel, or tool allows the agent to execute code on the host. |
-| **Mitigation** | No `--privileged` flag on the agent container; only the dind sidecar runs privileged. Containers run as the host user (not root inside the container). |
+| **Mitigation** | No `--privileged` flag on the agent container. In `--docker dind` mode, only the dind sidecar runs privileged. In `--docker none` and `--docker dood` modes, no privileged container is started at all. Containers run as the host user (not root inside the container). |
 | **Residual risk** | Container escapes are a known class of vulnerability. construct does not claim to be a hardened sandbox. A sufficiently motivated or compromised model could attempt this. |
-| **vs. host baseline** | On the host, no escape is needed — the agent already is on the host. construct raises the bar significantly. |
+| **vs. host baseline** | On the host, no escape is needed — the agent already is on the host. construct raises the bar significantly. `--docker none` offers the smallest privileged-container footprint since no sidecar is involved. |
 
 ---
 
@@ -84,10 +98,10 @@ The agent does **not** have access to:
 
 | | |
 |---|---|
-| **Scenario** | The agent uses the inner dind Docker daemon to do something harmful — mounting host paths, running containers with `--privileged`, etc. |
-| **Mitigation** | The inner daemon is completely isolated. It cannot reach the host daemon or any host resources. |
-| **Residual risk** | The agent can do arbitrary things **within the inner daemon**: spin up crypto miners, exfiltrate data via the network, etc. The inner daemon has outbound internet access (the host's network stack is reachable via the bridge). |
-| **vs. host baseline** | On the host the agent could hijack the real Docker daemon with all existing volumes and networks. construct limits this to the isolated inner daemon. |
+| **Scenario** | The agent uses a Docker daemon to do something harmful — mounting host paths, running containers with `--privileged`, etc. |
+| **Mitigation** | In `--docker dind` mode, the inner daemon is completely isolated. It cannot reach the host daemon or any host resources. In `--docker none`, no daemon is available to the agent at all. |
+| **Residual risk** | In `--docker dind` mode, the agent can do arbitrary things **within the inner daemon**: spin up crypto miners, exfiltrate data via the network, etc. The inner daemon has outbound internet access (the host's network stack is reachable via the bridge). In `--docker dood` mode the agent talks directly to the host daemon — see T9. |
+| **vs. host baseline** | On the host the agent could hijack the real Docker daemon with all existing volumes and networks. `--docker dind` limits this to the isolated inner daemon; `--docker none` removes daemon access entirely. |
 
 ---
 
@@ -151,9 +165,9 @@ The agent does **not** have access to:
 | | |
 |---|---|
 | **Scenario** | The agent container gets access to `/var/run/docker.sock` and takes over the host Docker daemon. |
-| **Mitigation** | The Docker socket is not mounted into the agent container. The `DOCKER_HOST` env var points to the inner dind daemon only. |
-| **Residual risk** | None from inside the container. On the host, anyone with Docker socket access can already do this — that is a host-level concern. |
-| **vs. host baseline** | On the host, the agent inherits the user's Docker socket access. construct eliminates this. |
+| **Mitigation** | In `--docker dind` (default) and `--docker none` modes, the Docker socket is not mounted into the agent container. `DOCKER_HOST` points to the inner dind daemon only (`dind` mode) or is unset (`none` mode). |
+| **Residual risk** | In `--docker dood` mode the outer Docker socket **is** explicitly mounted into the agent container. The agent can use it to inspect or modify any container, image, volume, or network on the host daemon — including mounting host paths, running privileged containers, etc. This mode should only be used when the agent genuinely needs access to the host daemon and the risk is understood and accepted. |
+| **vs. host baseline** | On the host, the agent inherits the user's Docker socket access. `--docker dind` and `--docker none` eliminate this; `--docker dood` is equivalent to the host baseline for Docker access. |
 
 ---
 
@@ -174,8 +188,8 @@ The agent does **not** have access to:
 | | |
 |---|---|
 | **Scenario** | Another container on the same bridge network connects to the inner Docker daemon (port 2375) and performs unauthorized Docker operations. |
-| **Mitigation** | The bridge network is created fresh per session and contains only the agent container and the dind sidecar. No other containers join it. Both are removed at session end. |
-| **Residual risk** | The inner daemon has no TLS and no authentication. Any container on the bridge could connect to it. In practice, no other containers join the session bridge. |
+| **Mitigation** | This threat only applies in `--docker dind` mode. The bridge network is created fresh per session and contains only the agent container and the dind sidecar. No other containers join it. Both are removed at session end. In `--docker none` and `--docker dood` modes no inner daemon is started, so this threat does not apply. |
+| **Residual risk** | In `--docker dind` mode, the inner daemon has no TLS and no authentication. Any container on the bridge could connect to it. In practice, no other containers join the session bridge. |
 | **vs. host baseline** | Not applicable. |
 
 ---
@@ -194,20 +208,20 @@ The agent does **not** have access to:
 
 ## Summary: construct vs. running on the host
 
-| Risk | On host (yolo) | In construct |
-|---|---|---|
-| Agent reads arbitrary host files | Full access | Repo only |
-| Agent reads credentials/keys on host | All of `~` | Explicitly injected keys only |
-| Agent hijacks host Docker daemon | Yes (if user has socket) | No |
-| Agent persists malicious config | Real `~/.bashrc` etc. | Isolated named volume |
-| Agent accesses local services (localhost ports) | Yes | No |
-| Agent exfiltrates data over network | Yes | Yes |
-| Agent pushes to git remotes | Full credential store (SSH + HTTPS) | Injected token only (HTTPS); no SSH |
-| Agent escapes to host | Already there | Possible but requires exploit |
-| Agent modifies repo files | Yes | Yes |
+| Risk | On host (yolo) | `--docker none` | `--docker dind` | `--docker dood` |
+|---|---|---|---|---|
+| Agent reads arbitrary host files | Full access | Repo only | Repo only | Repo only |
+| Agent reads credentials/keys on host | All of `~` | Explicitly injected keys only | Explicitly injected keys only | Explicitly injected keys only |
+| Agent hijacks host Docker daemon | Yes (if user has socket) | No | No | **Yes** (socket is mounted) |
+| Agent persists malicious config | Real `~/.bashrc` etc. | Isolated named volume | Isolated named volume | Isolated named volume |
+| Agent accesses local services (localhost ports) | Yes | No | No | No |
+| Agent exfiltrates data over network | Yes | Yes | Yes | Yes |
+| Agent pushes to git remotes | Full credential store (SSH + HTTPS) | Injected token only (HTTPS); no SSH | Injected token only (HTTPS); no SSH | Injected token only (HTTPS); no SSH |
+| Agent escapes to host | Already there | Possible but requires exploit; no privileged sidecar | Possible but requires exploit | Possible but requires exploit |
+| Agent modifies repo files | Yes | Yes | Yes | Yes |
+| Privileged container on host | N/A | None | dind sidecar only | None |
 
-The last two rows are the honest limits of what construct provides. Everything
-else is a meaningful improvement over the baseline.
+The last two rows of the original table — agent escapes and repo modification — remain the honest limits of what construct provides. Everything else is a meaningful improvement over the baseline.
 
 ---
 

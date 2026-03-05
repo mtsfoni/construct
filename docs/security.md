@@ -51,7 +51,8 @@ provides.
 | Credentials at rest on the host | ❌ Plain text in `.env` files; protected only by filesystem permissions |
 | Credentials visible inside the container via `/proc/1/environ` | ❌ The entrypoint exports them as env vars; any process inside the container can read them |
 | Host user with Docker socket access | ❌ Anyone who can run `docker` on the host can inspect volumes and networks |
-| DinD daemon TLS | ❌ The inner Docker daemon runs without TLS on port 2375; accessible to anything on the session bridge network |
+| DinD daemon TLS | ⚠️  Only applies in `--docker dind` mode. The inner Docker daemon runs without TLS on port 2375; accessible to anything on the session bridge network. Not present in `--docker none` or `--docker dood` modes |
+| Outer Docker socket (`--docker dood`) | ❌ In `--docker dood` mode, `/var/run/docker.sock` is mounted into the agent container, giving the agent full control over the host Docker daemon |
 | Temp secret files during the session | ⚠️  Written as `0600` and removed on exit; a root process or another process running as the same user on the host could read them during the session |
 
 ## Recommendations for users
