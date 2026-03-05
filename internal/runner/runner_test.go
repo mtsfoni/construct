@@ -192,6 +192,80 @@ func TestBuildRunArgs_UserFlag(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_GlobalCommandsMountedWhenDirExists verifies that when the
+// tool is "opencode" and ~/.config/opencode/commands/ exists on the host, a
+// read-only bind mount for that directory is added to the docker run args.
+func TestBuildRunArgs_GlobalCommandsMountedWhenDirExists(t *testing.T) {
+	// Point HOME at a temp dir so os.UserHomeDir() returns a predictable path.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	commandsDir := filepath.Join(fakeHome, ".config", "opencode", "commands")
+	if err := os.MkdirAll(commandsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "opencode", RunCmd: []string{"opencode"}}
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	want := commandsDir + ":/home/agent/.config/opencode/commands:ro,z"
+	found := false
+	for i, arg := range args {
+		if arg == "-v" && i+1 < len(args) && args[i+1] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected -v %s in args, got: %v", want, args)
+	}
+}
+
+// TestBuildRunArgs_GlobalCommandsNotMountedWhenDirAbsent verifies that no
+// commands bind mount is added when ~/.config/opencode/commands/ does not exist.
+func TestBuildRunArgs_GlobalCommandsNotMountedWhenDirAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately do NOT create the commands directory.
+
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "opencode", RunCmd: []string{"opencode"}}
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	for i, arg := range args {
+		if arg == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "opencode/commands") {
+			t.Errorf("unexpected commands mount when dir is absent: %s", args[i+1])
+		}
+	}
+}
+
+// TestBuildRunArgs_GlobalCommandsNotMountedForOtherTools verifies that the
+// opencode commands directory is not mounted for tools other than "opencode".
+func TestBuildRunArgs_GlobalCommandsNotMountedForOtherTools(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create the directory — it exists, but the tool is not opencode.
+	commandsDir := filepath.Join(fakeHome, ".config", "opencode", "commands")
+	if err := os.MkdirAll(commandsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "copilot", RunCmd: []string{"copilot"}}
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	for i, arg := range args {
+		if arg == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "opencode/commands") {
+			t.Errorf("unexpected commands mount for non-opencode tool: %s", args[i+1])
+		}
+	}
+}
+
 func TestWriteSecretFiles_CreatesFiles(t *testing.T) {
 	env := map[string]string{
 		"TOKEN_A": "aaa",

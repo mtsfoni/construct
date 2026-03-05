@@ -5,6 +5,7 @@
 ### Added
 - **`ruby` stack** — `construct-base` + Ruby (system package), Bundler, and Jekyll. Use `--stack ruby` for Jekyll sites and Ruby projects.
 - **`ruby-ui` stack** — `construct-ruby` + `@playwright/mcp` + Chromium. Use `--stack ruby-ui --mcp` for Jekyll/Ruby projects that also need browser automation.
+- **Global opencode slash commands** — when `~/.config/opencode/commands/` exists on the host, it is automatically bind-mounted read-only into the opencode agent container. Custom slash commands defined globally on the host are now available inside the container without any extra flags.
 
 ---
 

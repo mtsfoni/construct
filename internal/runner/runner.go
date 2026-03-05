@@ -221,6 +221,19 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 		"-w", "/workspace",
 	)
 
+	// Mount the host's global opencode commands directory read-only so the
+	// agent can use slash commands the user has defined globally
+	// (~/.config/opencode/commands/). Only opencode understands this path.
+	// Skip silently when the directory does not exist on the host.
+	if cfg.Tool.Name == "opencode" {
+		if hostHome, err := os.UserHomeDir(); err == nil {
+			hostCommandsDir := filepath.Join(hostHome, ".config", "opencode", "commands")
+			if info, err := os.Stat(hostCommandsDir); err == nil && info.IsDir() {
+				args = append(args, "-v", hostCommandsDir+":/home/agent/.config/opencode/commands:ro,z")
+			}
+		}
+	}
+
 	// Mount the global auth volume when the tool defines one. This volume is
 	// NOT wiped by --reset so OAuth tokens survive across resets and repos.
 	if authVolume != "" && cfg.Tool.AuthVolumePath != "" {
