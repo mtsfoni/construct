@@ -7,12 +7,19 @@ import (
 )
 
 // LastUsed holds the stack that was last used for a repository,
-// plus any optional --mcp, --port, and --docker flags.
+// plus any optional --mcp, --port, --docker, --serve-port, and --client flags.
 type LastUsed struct {
 	Stack      string   `json:"stack"`
 	MCP        bool     `json:"mcp,omitempty"`
 	Ports      []string `json:"ports,omitempty"`
 	DockerMode string   `json:"docker,omitempty"`
+	// ServePort is the port used for the opencode HTTP server (opencode serve).
+	// Zero means the field was absent in an older entry; callers must default to 4096.
+	ServePort int `json:"serve_port,omitempty"`
+	// Client is the local client to use when connecting to the opencode server.
+	// Empty means auto-detect (try opencode attach, fall back to browser).
+	// Valid non-empty values: "tui", "web".
+	Client string `json:"client,omitempty"`
 }
 
 // lastUsedFile returns the path to ~/.construct/last-used.json.
@@ -24,8 +31,8 @@ func lastUsedFile() (string, error) {
 	return filepath.Join(home, ".construct", "last-used.json"), nil
 }
 
-// SaveLastUsed records the stack, mcp flag, ports, and docker mode used for repoPath.
-func SaveLastUsed(repoPath, stack string, mcp bool, ports []string, dockerMode string) error {
+// SaveLastUsed records the stack, mcp flag, ports, docker mode, serve port, and client used for repoPath.
+func SaveLastUsed(repoPath, stack string, mcp bool, ports []string, dockerMode string, servePort int, client string) error {
 	path, err := lastUsedFile()
 	if err != nil {
 		return err
@@ -36,7 +43,7 @@ func SaveLastUsed(repoPath, stack string, mcp bool, ports []string, dockerMode s
 		return err
 	}
 
-	m[repoPath] = LastUsed{Stack: stack, MCP: mcp, Ports: ports, DockerMode: dockerMode}
+	m[repoPath] = LastUsed{Stack: stack, MCP: mcp, Ports: ports, DockerMode: dockerMode, ServePort: servePort, Client: client}
 	return writeLastUsedMap(path, m)
 }
 

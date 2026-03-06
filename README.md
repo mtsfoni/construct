@@ -51,7 +51,7 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path] [-- <tool-args>]
+construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [--serve-port <port>] [--client <tui|web>] [path] [-- <tool-args>]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
 construct qs [path] [-- <tool-args>]
 ```
@@ -63,6 +63,8 @@ construct --stack dotnet /path/to/repo
 construct --stack go ~/projects/myapp
 construct --stack ui --mcp --port 3000 .
 construct --stack go --docker dind .
+construct --client web .
+construct --client tui .
 ```
 
 ### Flags
@@ -76,6 +78,8 @@ construct --stack go --docker dind .
 | `--debug` | `false` | Start an interactive shell instead of the agent (for troubleshooting) |
 | `--mcp` | `false` | Activate MCP servers (e.g. `@playwright/mcp`); requires `--stack ui`, `--stack dotnet-ui`, `--stack dotnet-big-ui`, or `--stack ruby-ui` for browser automation |
 | `--port` | *(none)* | Publish a container port to the host (repeatable). Accepts any format `docker run -p` supports: `3000`, `9000:3000`, `127.0.0.1:3000:3000`. |
+| `--serve-port` | `4096` | Port for the opencode HTTP server inside the container. |
+| `--client` | *(auto)* | Local client to connect to the opencode server: `tui` (always use `opencode attach`; error if not on PATH), `web` (always open browser), or omit for auto-detect. |
 | `--version` | — | Print the construct version and exit. |
 
 ## Quickstart (`qs`)
@@ -86,7 +90,7 @@ After running `construct` at least once in a repo, replay the exact same invocat
 construct qs [path]
 ```
 
-`qs` restores the last `--stack`, `--docker`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
+`qs` restores the last `--stack`, `--docker`, `--mcp`, `--port`, `--serve-port`, and `--client` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
 
 You can pass extra arguments to the tool after `--`. They are forwarded verbatim and are not saved to last-used:
 

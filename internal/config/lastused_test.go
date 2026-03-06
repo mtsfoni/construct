@@ -26,7 +26,7 @@ func TestSaveAndLoadLastUsed_RoundTrip(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	if err := config.SaveLastUsed(repo, "base", false, nil, ""); err != nil {
+	if err := config.SaveLastUsed(repo, "base", false, nil, "", 0, ""); err != nil {
 		t.Fatalf("SaveLastUsed: %v", err)
 	}
 
@@ -67,8 +67,8 @@ func TestSaveLastUsed_UpdatesExistingEntry(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "base", false, nil, ""))
-	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "base", false, nil, "", 0, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "", 0, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -84,8 +84,8 @@ func TestSaveLastUsed_IndependentEntriesPerRepo(t *testing.T) {
 
 	repo1 := t.TempDir()
 	repo2 := t.TempDir()
-	must(t, config.SaveLastUsed(repo1, "base", false, nil, ""))
-	must(t, config.SaveLastUsed(repo2, "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo1, "base", false, nil, "", 0, ""))
+	must(t, config.SaveLastUsed(repo2, "go", false, nil, "", 0, ""))
 
 	g1, err := config.LoadLastUsed(repo1)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 	}
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, ""))
+	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, "", 0, ""))
 
 	path := filepath.Join(home, ".construct", "last-used.json")
 	info, err := os.Stat(path)
@@ -125,7 +125,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 func TestSaveLastUsed_CreatesConstructDir(t *testing.T) {
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, ""))
+	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, "", 0, ""))
 
 	dir := filepath.Join(home, ".construct")
 	info, err := os.Stat(dir)
@@ -141,7 +141,7 @@ func TestSaveAndLoadLastUsed_MCPAndPorts(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "ui", true, []string{"3000", "8080:8080"}, "dind"))
+	must(t, config.SaveLastUsed(repo, "ui", true, []string{"3000", "8080:8080"}, "dind", 4096, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestSaveAndLoadLastUsed_MCPFalseOmitted(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "", 0, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestSaveAndLoadLastUsed_DockerMode(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "go", false, nil, "dind"))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "dind", 0, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestSaveAndLoadLastUsed_DockerModeOmittedWhenEmpty(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "", 0, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -204,5 +204,82 @@ func TestSaveAndLoadLastUsed_DockerModeOmittedWhenEmpty(t *testing.T) {
 	// Empty string means no explicit mode was saved; caller defaults to "none".
 	if got.DockerMode != "" {
 		t.Errorf("DockerMode = %q, want empty string when not set", got.DockerMode)
+	}
+}
+
+func TestSaveAndLoadLastUsed_ServePort(t *testing.T) {
+	withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "none", 4096, ""))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	if got.ServePort != 4096 {
+		t.Errorf("ServePort = %d, want 4096", got.ServePort)
+	}
+}
+
+// TestSaveAndLoadLastUsed_ServePortOmittedWhenZero verifies that serve_port is
+// omitted from JSON when zero (old entries without the field), and that the
+// caller correctly interprets zero as "use the default of 4096".
+func TestSaveAndLoadLastUsed_ServePortOmittedWhenZero(t *testing.T) {
+	withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "none", 0, ""))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	// Zero is the sentinel "absent" value; callers default it to 4096.
+	if got.ServePort != 0 {
+		t.Errorf("ServePort = %d, want 0 (absent/legacy entry)", got.ServePort)
+	}
+}
+
+func TestSaveAndLoadLastUsed_Client(t *testing.T) {
+	withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "none", 4096, "web"))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	if got.Client != "web" {
+		t.Errorf("Client = %q, want %q", got.Client, "web")
+	}
+}
+
+// TestSaveAndLoadLastUsed_ClientOmittedWhenEmpty verifies that client is omitted
+// from JSON when empty (old entries without the field), meaning auto-detect.
+func TestSaveAndLoadLastUsed_ClientOmittedWhenEmpty(t *testing.T) {
+	home := withHome(t)
+
+	repo := t.TempDir()
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "none", 0, ""))
+
+	got, err := config.LoadLastUsed(repo)
+	if err != nil {
+		t.Fatalf("LoadLastUsed: %v", err)
+	}
+	// Empty string is the sentinel "auto-detect" value.
+	if got.Client != "" {
+		t.Errorf("Client = %q, want empty string (auto-detect)", got.Client)
+	}
+
+	// Confirm "client" key is absent in the JSON file.
+	path := filepath.Join(home, ".construct", "last-used.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read last-used.json: %v", err)
+	}
+	if contains(string(data), `"client"`) {
+		t.Errorf("expected \"client\" key to be absent from JSON when empty, but found it in:\n%s", data)
 	}
 }

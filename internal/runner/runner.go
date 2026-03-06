@@ -5,13 +5,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mtsfoni/construct/internal/buildinfo"
 	"github.com/mtsfoni/construct/internal/dind"
@@ -48,12 +51,50 @@ type Config struct {
 	// ExtraArgs are additional arguments passed verbatim to the tool after
 	// Tool.RunCmd. They are collected from everything the user supplies after
 	// a bare "--" separator on the command line. Ignored in Debug mode.
+	//
+	// In serve mode (non-Debug), when ExtraArgs is non-empty it is treated as a
+	// headless prompt: "opencode run --attach <url> <extra-args...>" is run
+	// locally. When empty, "opencode attach <url>" is run locally (interactive).
 	ExtraArgs []string
+	// ServePort is the port on which the opencode HTTP server listens inside the
+	// container (opencode serve --port <ServePort>). The same port is published to
+	// the host unchanged (127.0.0.1:<ServePort>:<ServePort>). Defaults to 4096
+	// when zero.
+	ServePort int
+	// Client selects the local client that connects to the opencode server after
+	// it starts. Valid values:
+	//   ""     auto-detect: try "opencode attach", fall back to browser (default)
+	//   "tui"  always use "opencode attach"; error if opencode not on PATH
+	//   "web"  always open the browser directly; incompatible with ExtraArgs
+	Client string
+}
+
+// defaultServePort is the port used by opencode serve when Config.ServePort is zero.
+const defaultServePort = 4096
+
+// servePort returns the effective serve port for the given config.
+func servePort(cfg *Config) int {
+	if cfg.ServePort > 0 {
+		return cfg.ServePort
+	}
+	return defaultServePort
 }
 
 // Run builds images, starts any requested Docker sidecar, and runs the agent
 // container. It blocks until the container exits and then cleans up.
+//
+// In normal (non-debug) mode the container runs "opencode serve" headlessly and
+// the local client (opencode attach or browser) is launched from the host.
+// In debug mode the old interactive shell behaviour is preserved.
 func Run(cfg *Config) error {
+	// Validate --client value up front.
+	switch cfg.Client {
+	case "", "tui", "web":
+		// valid
+	default:
+		return fmt.Errorf("unknown client %q; supported values: tui, web", cfg.Client)
+	}
+
 	// 1. Ensure the stack image exists (build if needed).
 	if err := stacks.EnsureBuilt(cfg.Stack, cfg.Rebuild); err != nil {
 		return err
@@ -122,6 +163,9 @@ func Run(cfg *Config) error {
 		}
 	}
 
+	// containerName is used for cleanup in the signal handler.
+	containerName := "construct-agent-" + sessionID
+
 	// Always clean up on exit — even on SIGINT/SIGTERM.
 	// os.Exit does not run deferred functions, so the signal handler must
 	// explicitly remove the secrets directory before calling os.Exit.
@@ -133,6 +177,7 @@ func Run(cfg *Config) error {
 		case <-sigs:
 			fmt.Println("\nconstruct: interrupted — cleaning up…")
 			os.RemoveAll(secretsDir)
+			stopContainer(containerName)
 			if dindInst != nil {
 				dindInst.Stop()
 			}
@@ -147,21 +192,50 @@ func Run(cfg *Config) error {
 		}
 	}()
 
-	// 8. Build the docker run argument list.
-	args := buildRunArgs(cfg, dindInst, toolImage, sessionID, homVol, authVol, secretsDir)
-
-	// 9. Run the agent container interactively.
-
+	// 8. Debug mode: run an interactive shell the old way (docker run -it /bin/bash).
 	if cfg.Debug {
 		fmt.Printf("construct: debug mode — starting shell in %s container (no agent)…\n", cfg.Stack)
-	} else {
-		fmt.Printf("construct: launching %s in %s container…\n", cfg.Tool.Name, cfg.Stack)
+		args := buildDebugArgs(cfg, dindInst, toolImage, sessionID, homVol, authVol, secretsDir)
+		cmd := exec.Command("docker", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
 	}
-	cmd := exec.Command("docker", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// 9. Normal mode: start the opencode server detached inside the container,
+	//    wait for it to be ready, then connect a local client.
+	port := servePort(cfg)
+	fmt.Printf("construct: launching %s serve in %s container (port %d)…\n", cfg.Tool.Name, cfg.Stack, port)
+
+	serverArgs := buildServeArgs(cfg, dindInst, toolImage, sessionID, homVol, authVol, secretsDir, port)
+	startCmd := exec.Command("docker", serverArgs...)
+	startCmd.Stdout = os.Stdout
+	startCmd.Stderr = os.Stderr
+	if err := startCmd.Run(); err != nil {
+		return fmt.Errorf("start server container: %w", err)
+	}
+
+	// 10. Wait for the opencode HTTP server to accept connections.
+	serverURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if err := waitForServer(serverURL, 15*time.Second); err != nil {
+		stopContainer(containerName)
+		return fmt.Errorf("server did not become ready: %w", err)
+	}
+
+	// 11. Connect the local client. Stop the container when the client exits.
+	defer stopContainer(containerName)
+
+	if len(cfg.ExtraArgs) > 0 {
+		if cfg.Client == "web" {
+			stopContainer(containerName)
+			return fmt.Errorf("--client web is incompatible with passthrough args (headless requires opencode)")
+		}
+		// Headless mode: fire a task and stream output.
+		return runLocalHeadless(serverURL, cfg.ExtraArgs)
+	}
+	// Interactive mode: attach TUI or fall back to browser.
+	return runLocalAttach(serverURL, cfg.Client)
 }
 
 // buildRunArgs assembles the arguments for "docker run" that starts the agent.
@@ -293,6 +367,304 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 		args = append(args, cfg.ExtraArgs...)
 	}
 	return args
+}
+
+// buildServeArgs assembles the arguments for "docker run -d" that starts the
+// opencode HTTP server inside the container. The container is run detached so
+// the host can poll for readiness and then connect a local client.
+func buildServeArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVolume, authVolume, secretsDir string, port int) []string {
+	uid := os.Getuid()
+	gid := os.Getgid()
+
+	args := []string{"run", "--rm", "-d"}
+
+	// Attach to the dind session network when using Docker-in-Docker.
+	if cfg.DockerMode == "dind" && dindInst != nil {
+		args = append(args, "--network", dindInst.NetworkName)
+	}
+
+	args = append(args, "--name", "construct-agent-"+sessionID)
+
+	// Publish the serve port to loopback only so it is not exposed to the LAN.
+	args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", port, port))
+
+	if uid >= 0 && gid >= 0 {
+		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
+	}
+
+	authorName, authorEmail, committerName, committerEmail := hostGitIdentity()
+	args = append(args,
+		"-v", homeVolume+":/home/agent",
+		"-e", "HOME=/home/agent",
+		"-e", "GIT_AUTHOR_NAME="+authorName,
+		"-e", "GIT_AUTHOR_EMAIL="+authorEmail,
+		"-e", "GIT_COMMITTER_NAME="+committerName,
+		"-e", "GIT_COMMITTER_EMAIL="+committerEmail,
+	)
+
+	switch cfg.DockerMode {
+	case "dind":
+		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
+	case "dood":
+		args = append(args,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
+		)
+	}
+
+	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
+
+	args = append(args,
+		"-v", cfg.RepoPath+":/workspace:z",
+		"-w", "/workspace",
+	)
+
+	if cfg.Tool.Name == "opencode" {
+		if hostHome, err := os.UserHomeDir(); err == nil {
+			hostCommandsDir := filepath.Join(hostHome, ".config", "opencode", "commands")
+			if info, err := os.Stat(hostCommandsDir); err == nil && info.IsDir() {
+				args = append(args, "-v", hostCommandsDir+":/home/agent/.config/opencode/commands:ro,z")
+			}
+		}
+	}
+
+	if authVolume != "" && cfg.Tool.AuthVolumePath != "" {
+		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
+	}
+
+	if secretsDir != "" {
+		args = append(args, "-v", secretsDir+":/run/secrets:ro,z")
+	}
+
+	for k, v := range cfg.Tool.ExtraEnv {
+		args = append(args, "-e", k+"="+v)
+	}
+
+	if cfg.MCP {
+		args = append(args, "-e", "CONSTRUCT_MCP=1")
+	}
+
+	args = append(args, "-e", "CONSTRUCT=1")
+	// Expose the serve port to the entrypoint so it can document the server URL in AGENTS.md.
+	args = append(args, "-e", fmt.Sprintf("CONSTRUCT_SERVE_PORT=%d", port))
+
+	if len(cfg.Ports) > 0 {
+		containerPorts := make([]string, len(cfg.Ports))
+		for i, p := range cfg.Ports {
+			parts := strings.Split(p, ":")
+			containerPorts[i] = parts[len(parts)-1]
+			if len(parts) == 1 {
+				p = p + ":" + p
+			}
+			args = append(args, "-p", p)
+		}
+		args = append(args,
+			"-e", "CONSTRUCT_PORTS="+strings.Join(containerPorts, ","),
+		)
+	}
+
+	args = append(args, image)
+	// Serve mode: run opencode serve with the configured hostname and port.
+	args = append(args, "opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", port))
+	return args
+}
+
+// buildDebugArgs assembles the arguments for "docker run -it /bin/bash" used
+// in debug mode. It is identical to the old buildRunArgs but always uses
+// /bin/bash as the command.
+func buildDebugArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVolume, authVolume, secretsDir string) []string {
+	uid := os.Getuid()
+	gid := os.Getgid()
+
+	args := []string{"run", "--rm", "-it"}
+
+	if cfg.DockerMode == "dind" && dindInst != nil {
+		args = append(args, "--network", dindInst.NetworkName)
+	}
+
+	args = append(args, "--name", "construct-agent-"+sessionID)
+
+	if uid >= 0 && gid >= 0 {
+		args = append(args, "--user", fmt.Sprintf("%d:%d", uid, gid))
+	}
+
+	authorName, authorEmail, committerName, committerEmail := hostGitIdentity()
+	args = append(args,
+		"-v", homeVolume+":/home/agent",
+		"-e", "HOME=/home/agent",
+		"-e", "GIT_AUTHOR_NAME="+authorName,
+		"-e", "GIT_AUTHOR_EMAIL="+authorEmail,
+		"-e", "GIT_COMMITTER_NAME="+committerName,
+		"-e", "GIT_COMMITTER_EMAIL="+committerEmail,
+	)
+
+	switch cfg.DockerMode {
+	case "dind":
+		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
+	case "dood":
+		args = append(args,
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
+		)
+	}
+
+	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
+
+	args = append(args,
+		"-v", cfg.RepoPath+":/workspace:z",
+		"-w", "/workspace",
+	)
+
+	if cfg.Tool.Name == "opencode" {
+		if hostHome, err := os.UserHomeDir(); err == nil {
+			hostCommandsDir := filepath.Join(hostHome, ".config", "opencode", "commands")
+			if info, err := os.Stat(hostCommandsDir); err == nil && info.IsDir() {
+				args = append(args, "-v", hostCommandsDir+":/home/agent/.config/opencode/commands:ro,z")
+			}
+		}
+	}
+
+	if authVolume != "" && cfg.Tool.AuthVolumePath != "" {
+		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
+	}
+
+	if secretsDir != "" {
+		args = append(args, "-v", secretsDir+":/run/secrets:ro,z")
+	}
+
+	for k, v := range cfg.Tool.ExtraEnv {
+		args = append(args, "-e", k+"="+v)
+	}
+
+	if cfg.MCP {
+		args = append(args, "-e", "CONSTRUCT_MCP=1")
+	}
+
+	args = append(args, "-e", "CONSTRUCT=1")
+
+	if len(cfg.Ports) > 0 {
+		containerPorts := make([]string, len(cfg.Ports))
+		for i, p := range cfg.Ports {
+			parts := strings.Split(p, ":")
+			containerPorts[i] = parts[len(parts)-1]
+			if len(parts) == 1 {
+				p = p + ":" + p
+			}
+			args = append(args, "-p", p)
+		}
+		args = append(args,
+			"-e", "CONSTRUCT_PORTS="+strings.Join(containerPorts, ","),
+		)
+	}
+
+	args = append(args, image, "/bin/bash")
+	return args
+}
+
+// stopContainer stops and removes the named container. Errors are ignored
+// because the container may already be stopped or removed.
+func stopContainer(name string) {
+	exec.Command("docker", "stop", name).Run()     //nolint:errcheck
+	exec.Command("docker", "rm", "-f", name).Run() //nolint:errcheck
+}
+
+// waitForServer polls GET <serverURL>/global/health every 200ms until the
+// response body contains {"healthy":true} or the timeout expires.
+func waitForServer(serverURL string, timeout time.Duration) error {
+	healthURL := serverURL + "/global/health"
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 2 * time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(healthURL)
+		if err == nil {
+			var body struct {
+				Healthy bool `json:"healthy"`
+			}
+			if jerr := json.NewDecoder(resp.Body).Decode(&body); jerr == nil && body.Healthy {
+				resp.Body.Close()
+				return nil
+			}
+			resp.Body.Close()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out after %s waiting for %s", timeout, healthURL)
+}
+
+// runLocalAttach connects a local client to the opencode server according to
+// the client selection:
+//
+//	""     (auto) — try "opencode attach <url>"; fall back to browser if not found
+//	"tui"  — always use "opencode attach <url>"; error if opencode not on PATH
+//	"web"  — always open browser directly, skip opencode check
+func runLocalAttach(serverURL, client string) error {
+	switch client {
+	case "web":
+		return openBrowser(serverURL)
+	case "tui":
+		path, err := exec.LookPath("opencode")
+		if err != nil {
+			return fmt.Errorf("opencode not found on PATH; install opencode or use --client web")
+		}
+		cmd := exec.Command(path, "attach", serverURL)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	default: // "" — auto-detect
+		if path, err := exec.LookPath("opencode"); err == nil {
+			cmd := exec.Command(path, "attach", serverURL)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		}
+		// Fallback: open browser.
+		return openBrowser(serverURL)
+	}
+}
+
+// runLocalHeadless runs "opencode run --attach <url> <args...>" locally,
+// streaming stdout/stderr so the user sees the task output.
+func runLocalHeadless(serverURL string, args []string) error {
+	path, err := exec.LookPath("opencode")
+	if err != nil {
+		return fmt.Errorf("opencode not found on PATH (required for headless mode): %w", err)
+	}
+	cmdArgs := append([]string{"run", "--attach", serverURL}, args...)
+	cmd := exec.Command(path, cmdArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// openBrowser opens the given URL in the system default browser and then blocks
+// until the user presses Ctrl+C (the signal handler will clean up the container).
+func openBrowser(url string) error {
+	var browserCmd string
+	switch {
+	case commandExists("xdg-open"):
+		browserCmd = "xdg-open"
+	case commandExists("open"):
+		browserCmd = "open"
+	}
+
+	if browserCmd != "" {
+		fmt.Printf("construct: opening %s in your browser\n", url)
+		exec.Command(browserCmd, url).Start() //nolint:errcheck
+	} else {
+		fmt.Printf("construct: opencode not found on PATH; open %s in your browser\n", url)
+	}
+	fmt.Println("construct: press Ctrl+C to stop the server")
+	// Block until the signal handler fires and calls os.Exit.
+	select {}
+}
+
+// commandExists returns true if the named command is available on $PATH.
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 // buildToolImage creates a derived Docker image that installs the tool on top of the stack image.
@@ -461,6 +833,15 @@ func generatedEntrypoint() string {
 		"- Use the port(s) listed in \\$CONSTRUCT_PORTS: **${CONSTRUCT_PORTS}**\n" +
 		"- When the server is ready, print a clear message so the user knows to open\n" +
 		"  their browser, e.g.: \"Server ready at http://localhost:${CONSTRUCT_PORTS}\"\n" +
+		"AGENTSEOF\n" +
+		"fi\n" +
+		"if [ -n \"${CONSTRUCT_SERVE_PORT}\" ]; then\n" +
+		"  cat >> \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
+		"\n" +
+		"## opencode server\n" +
+		"\n" +
+		"This opencode instance is running in server mode on port ${CONSTRUCT_SERVE_PORT}.\n" +
+		"The host connects to it via http://localhost:${CONSTRUCT_SERVE_PORT}.\n" +
 		"AGENTSEOF\n" +
 		"fi\n" +
 		"# Set up a global commit-msg hook that appends a 'Generated by construct'\n" +
