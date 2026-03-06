@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Pass-through args (`--`)** — both `construct [flags] [path] -- <tool-args>` and `construct qs [path] -- <tool-args>` now forward everything after the bare `--` separator verbatim to the tool inside the container (e.g. `construct qs -- continue-session <session-id>`). Pass-through args are not persisted to last-used settings. Debug mode (`--debug`) ignores them.
+
 ### Fixed
 - **Container startup "Permission denied" errors** — the entrypoint script's heredoc that writes `~/.config/opencode/AGENTS.md` used an unquoted delimiter, causing the shell to treat backtick-wrapped paths (`` `/workspace` ``, `` `/home/agent` ``) as command substitutions. The delimiter is now quoted (`<< 'AGENTSEOF'`), preventing the errors `/workspace: Permission denied` and `/home/agent: Permission denied` on startup.
 

@@ -28,6 +28,19 @@ func (p *portFlag) Set(v string) error {
 	return nil
 }
 
+// splitPassthrough splits args on the first bare "--" token.
+// The left slice contains everything before "--" (construct flags and path).
+// The right slice contains everything after "--" (tool pass-through args).
+// If "--" is absent, right is nil.
+func splitPassthrough(args []string) (left, right []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
 		v := buildinfo.Version
@@ -50,6 +63,8 @@ func main() {
 
 // runAgent is the original construct behaviour: build images and launch the agent.
 func runAgent(args []string) {
+	constructArgs, passthroughArgs := splitPassthrough(args)
+
 	allStacks := stacks.All()
 
 	fs := flag.NewFlagSet("construct", flag.ExitOnError)
@@ -63,12 +78,15 @@ func runAgent(args []string) {
 	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path] [-- <tool-args>]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last stack used in the current repo\n\n")
 		fmt.Fprintf(os.Stderr, "Other flags:\n")
 		fmt.Fprintf(os.Stderr, "  --version  Print the construct version and exit\n\n")
+		fmt.Fprintf(os.Stderr, "Pass-through args:\n")
+		fmt.Fprintf(os.Stderr, "  Anything after -- is forwarded verbatim to the tool inside the container.\n")
+		fmt.Fprintf(os.Stderr, "  Example: construct qs -- continue-session <session-id>\n\n")
 		fmt.Fprintf(os.Stderr, "Available stacks:\n")
 		for _, s := range allStacks {
 			fmt.Fprintf(os.Stderr, "  %s\n", s)
@@ -87,7 +105,7 @@ func runAgent(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(constructArgs); err != nil {
 		os.Exit(1)
 	}
 
@@ -117,6 +135,7 @@ func runAgent(args []string) {
 	}
 
 	// Persist so `construct qs` can replay this invocation.
+	// Pass-through args (after --) are not persisted.
 	if err := config.SaveLastUsed(absRepoPath, *stackName, *mcp, []string(ports), *dockerMode); err != nil {
 		log.Printf("warning: could not save last-used settings: %v", err)
 	}
@@ -131,6 +150,7 @@ func runAgent(args []string) {
 		MCP:        *mcp,
 		Ports:      []string(ports),
 		DockerMode: *dockerMode,
+		ExtraArgs:  passthroughArgs,
 	}); err != nil {
 		log.Fatal(err)
 	}
@@ -231,12 +251,15 @@ func targetEnvFile(local bool) (string, error) {
 
 // runQuickstart re-runs the last stack recorded for the target repo.
 func runQuickstart(args []string) {
+	qsArgs, passthroughArgs := splitPassthrough(args)
+
 	fs := flag.NewFlagSet("construct qs", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct qs [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct qs [path] [-- <tool-args>]\n\n")
 		fmt.Fprintf(os.Stderr, "Re-runs the last stack used for the given repo (defaults to cwd).\n")
+		fmt.Fprintf(os.Stderr, "Anything after -- is forwarded verbatim to the tool inside the container.\n")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(qsArgs); err != nil {
 		os.Exit(1)
 	}
 
@@ -284,5 +307,12 @@ func runQuickstart(args []string) {
 		agentArgs = append(agentArgs, "--port", p)
 	}
 	agentArgs = append(agentArgs, absRepoPath)
+	// Pass-through args are appended after -- so runAgent's splitPassthrough
+	// correctly routes them to runner.Config.ExtraArgs (and they are not saved
+	// to last-used, preserving the original session-resuming semantics).
+	if len(passthroughArgs) > 0 {
+		agentArgs = append(agentArgs, "--")
+		agentArgs = append(agentArgs, passthroughArgs...)
+	}
 	runAgent(agentArgs)
 }

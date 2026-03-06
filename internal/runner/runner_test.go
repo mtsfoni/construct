@@ -109,6 +109,90 @@ func fakeConfig(t *testing.T, authKeys []string) *Config {
 	}
 }
 
+// TestBuildRunArgs_ExtraArgsAppendedToRunCmd verifies that Config.ExtraArgs are
+// appended after Tool.RunCmd at the end of the docker run argument list.
+func TestBuildRunArgs_ExtraArgsAppendedToRunCmd(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}}
+	cfg.ExtraArgs = []string{"continue-session", "dead-beef-1234"}
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	// Find the image name and confirm what follows it.
+	imageIdx := -1
+	for i, arg := range args {
+		if arg == "testimage" {
+			imageIdx = i
+			break
+		}
+	}
+	if imageIdx < 0 {
+		t.Fatalf("image name not found in args: %v", args)
+	}
+	tail := args[imageIdx+1:]
+	want := []string{"opencode", "continue-session", "dead-beef-1234"}
+	if len(tail) != len(want) {
+		t.Fatalf("args after image = %v, want %v", tail, want)
+	}
+	for i, w := range want {
+		if tail[i] != w {
+			t.Errorf("args[%d] = %q, want %q", i, tail[i], w)
+		}
+	}
+}
+
+// TestBuildRunArgs_ExtraArgsIgnoredInDebugMode verifies that ExtraArgs are NOT
+// forwarded when Debug is true (the command is /bin/bash, not the tool).
+func TestBuildRunArgs_ExtraArgsIgnoredInDebugMode(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}}
+	cfg.ExtraArgs = []string{"continue-session", "dead-beef-1234"}
+	cfg.Debug = true
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	imageIdx := -1
+	for i, arg := range args {
+		if arg == "testimage" {
+			imageIdx = i
+			break
+		}
+	}
+	if imageIdx < 0 {
+		t.Fatalf("image name not found in args: %v", args)
+	}
+	tail := args[imageIdx+1:]
+	// Debug mode must pass /bin/bash as the sole command, with no extra args.
+	if len(tail) != 1 || tail[0] != "/bin/bash" {
+		t.Errorf("debug mode args after image = %v, want [/bin/bash]", tail)
+	}
+}
+
+// TestBuildRunArgs_NoExtraArgsWhenEmpty verifies that when ExtraArgs is nil or
+// empty the command section after the image is just Tool.RunCmd unchanged.
+func TestBuildRunArgs_NoExtraArgsWhenEmpty(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}}
+	cfg.ExtraArgs = nil
+
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	imageIdx := -1
+	for i, arg := range args {
+		if arg == "testimage" {
+			imageIdx = i
+			break
+		}
+	}
+	if imageIdx < 0 {
+		t.Fatalf("image name not found in args: %v", args)
+	}
+	tail := args[imageIdx+1:]
+	if len(tail) != 1 || tail[0] != "opencode" {
+		t.Errorf("args after image = %v, want [opencode]", tail)
+	}
+}
+
 func TestBuildRunArgs_DockerHostUsesStaticDindAlias(t *testing.T) {
 	cfg := fakeConfig(t, nil) // DockerMode = "dind"
 	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")

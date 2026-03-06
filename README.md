@@ -51,9 +51,9 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
+construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path] [-- <tool-args>]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
-construct qs [path]
+construct qs [path] [-- <tool-args>]
 ```
 
 `path` defaults to the current working directory.
@@ -87,6 +87,22 @@ construct qs [path]
 ```
 
 `qs` restores the last `--stack`, `--docker`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
+
+You can pass extra arguments to the tool after `--`. They are forwarded verbatim and are not saved to last-used:
+
+```bash
+# Resume a previous opencode session
+construct qs -- -s ses_deadbeefcafe1234abcd5678
+
+# Same with an explicit repo path
+construct qs ~/projects/myapp -- -s ses_deadbeefcafe1234abcd5678
+```
+
+The `--` separator works with plain `construct` too:
+
+```bash
+construct --stack go -- -s ses_deadbeefcafe1234abcd5678
+```
 
 ## Supported tools
 

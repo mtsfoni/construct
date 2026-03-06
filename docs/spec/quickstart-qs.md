@@ -11,7 +11,7 @@ Introduce a `qs` subcommand that replays the last `--stack`, `--docker`, `--mcp`
 ## Behaviour
 
 ```
-construct qs [path]
+construct qs [path] [-- <tool-args>]
 ```
 
 - `path` defaults to the current working directory.
@@ -20,6 +20,7 @@ construct qs [path]
 - Errors with a clear message if no previous run has been recorded for the given path.
 - Replays `--docker`, `--mcp`, and all `--port` values that were used in the last recorded invocation.
 - For entries recorded before `--docker` was introduced (no `"docker"` key), defaults to `--docker none`.
+- Anything after a bare `--` separator is forwarded verbatim to the tool inside the container and is **not** saved to last-used (see `docs/spec/passthrough-args.md`).
 
 ## Persistence
 
@@ -44,7 +45,7 @@ Settings are saved automatically at the end of argument validation in every norm
 | File | Change |
 |------|--------|
 | `internal/config/lastused.go` | New — `SaveLastUsed`, `LoadLastUsed`, JSON read/write helpers; `DockerMode` field added |
-| `cmd/construct/main.go` | `main()` routes `qs` → `runQuickstart`; `runAgent` calls `SaveLastUsed`; `runQuickstart` prints and replays all flags; help lists `qs` under Subcommands |
+| `cmd/construct/main.go` | `main()` routes `qs` → `runQuickstart`; `runAgent` calls `SaveLastUsed`; `runQuickstart` prints and replays all flags; `runQuickstart` uses `splitPassthrough` to forward `--` args without saving them; help lists `qs` under Subcommands |
 | `README.md` | New **Quickstart (qs)** section |
 
 ## Non-goals
@@ -52,3 +53,4 @@ Settings are saved automatically at the end of argument validation in every norm
 - No flag to disable auto-saving.
 - No `qs --stack` overrides (just use the full command instead).
 - No TTY prompt to confirm before launching; the reused settings are printed to stderr.
+- Pass-through args after `--` are not persisted; a subsequent bare `construct qs` replays only the saved flags.

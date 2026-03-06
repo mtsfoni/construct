@@ -45,6 +45,10 @@ type Config struct {
 	// Valid values: "none" (no Docker; default), "dood" (Docker-outside-of-Docker
 	// via host socket bind-mount), "dind" (Docker-in-Docker sidecar).
 	DockerMode string
+	// ExtraArgs are additional arguments passed verbatim to the tool after
+	// Tool.RunCmd. They are collected from everything the user supplies after
+	// a bare "--" separator on the command line. Ignored in Debug mode.
+	ExtraArgs []string
 }
 
 // Run builds images, starts any requested Docker sidecar, and runs the agent
@@ -286,6 +290,7 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 		args = append(args, "/bin/bash")
 	} else {
 		args = append(args, cfg.Tool.RunCmd...)
+		args = append(args, cfg.ExtraArgs...)
 	}
 	return args
 }
