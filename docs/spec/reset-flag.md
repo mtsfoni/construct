@@ -11,7 +11,7 @@
 ### New `--reset` flag
 
 ```
-construct --tool opencode --stack ui --reset /path/to/repo
+construct --stack ui --reset /path/to/repo
 ```
 
 When `--reset` is passed, `runner.Run` removes the named home volume before calling `ensureHomeVolume`. `ensureHomeVolume` then creates a fresh volume and re-seeds all `HomeFiles` as if it were the first launch.

@@ -86,13 +86,6 @@ Opencode merges global and project-level rule files. The global
 `~/.config/opencode/AGENTS.md` written by construct is **additive** — it does
 not override a project-level `AGENTS.md` or `CLAUDE.md` in the workspace.
 
-## Copilot and other tools
-
-The global AGENTS.md at `~/.config/opencode/AGENTS.md` is opencode-specific.
-Copilot does not read this file. If agent awareness is needed for copilot in a
-future iteration, the same instructions could be injected via copilot's
-`~/.copilot/config.json` or a separate mechanism.
-
 ## Files changed
 
 | File | Change |

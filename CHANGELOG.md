@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Container startup "Permission denied" errors** — the entrypoint script's heredoc that writes `~/.config/opencode/AGENTS.md` used an unquoted delimiter, causing the shell to treat backtick-wrapped paths (`` `/workspace` ``, `` `/home/agent` ``) as command substitutions. The delimiter is now quoted (`<< 'AGENTSEOF'`), preventing the errors `/workspace: Permission denied` and `/home/agent: Permission denied` on startup.
+
+### Removed
+- **copilot tool support dropped** — `opencode` is now the only supported tool. The `copilot` tool registration, its `GH_TOKEN` auth requirement, and all copilot-specific home-file seeding have been removed. See `docs/adr/002-opencode-as-sole-tool.md`.
+
 ---
 
 ## [v0.6.3] — 2026-03-05
@@ -86,7 +92,7 @@
 - **`OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT=true`** — injected into the opencode container to prevent unwanted clipboard interference from terminal text selection.
 - **`CONSTRUCT=1` env var** — always injected into the agent container so tools can detect they are running inside construct.
 - **`CONSTRUCT_PORTS` env var** — injected when `--port` is used; contains the comma-separated list of container-side port numbers.
-- **`qs` now replays `--mcp` and `--port`** — the quickstart command restores the full previous invocation, not just `--tool` and `--stack`. `~/.construct/last-used.json` now stores `mcp` and `ports` alongside `tool` and `stack`.
+- **`qs` now replays `--mcp` and `--port`** — the quickstart command restores the full previous invocation, not just `--stack`. `~/.construct/last-used.json` now stores `mcp` and `ports` alongside `stack`.
 - **`install.sh`** — convenience script that builds the binary from source and installs it to `~/.local/bin/construct`.
 
 ### Changed

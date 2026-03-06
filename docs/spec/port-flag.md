@@ -18,10 +18,10 @@ ports to bind to.
 ## Usage
 
 ```
-construct --tool opencode --stack ui --port 3000 .
-construct --tool opencode --stack ui --port 3000 --port 8080 .
-construct --tool opencode --stack ui --port 9000:3000 .
-construct --tool opencode --stack ui --port 127.0.0.1:3000:3000 .
+construct --stack ui --port 3000 .
+construct --stack ui --port 3000 --port 8080 .
+construct --stack ui --port 9000:3000 .
+construct --stack ui --port 127.0.0.1:3000:3000 .
 ```
 
 The flag is repeatable: each `--port` adds one `-p` to the underlying
@@ -78,4 +78,4 @@ is sufficient.
 | `cmd/construct/main.go` | Added `portFlag` type (repeatable `flag.Value`); added `--port` flag; passes `Ports` to `runner.Config`; updated usage/examples |
 | `internal/runner/runner.go` | Added `Ports []string` to `Config`; emit `-p` flags and `CONSTRUCT`/`CONSTRUCT_PORTS` env vars in `buildRunArgs` |
 | `internal/runner/runner_test.go` | Added 5 unit tests covering bare port, colon mapping, multiple ports, three-part mapping, and absent-when-empty |
-| `cmd/construct/port_test.go` | New — integration tests: usage mentions `--port`; missing `--tool` still errors; multiple `--port` values parse without error |
+| `cmd/construct/port_test.go` | New — integration tests: usage mentions `--port`; multiple `--port` values parse without error |

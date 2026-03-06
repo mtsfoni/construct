@@ -97,8 +97,7 @@ construct-<stack>               stack image
 construct-<stack>-<tool>        tool image
 ```
 
-Examples: `construct-node-copilot`, `construct-ui-opencode`,
-`construct-go-opencode`.
+Examples: `construct-ui-opencode`, `construct-go-opencode`.
 
 ## What belongs in each layer
 
@@ -132,4 +131,3 @@ wipe it.
 | `internal/runner/runner.go` | `buildToolImage`, `generatedEntrypoint`, `buildRunArgs` |
 | `internal/tools/tools.go` | `Tool` struct — `InstallCmds`, `RunCmd`, `AuthEnv`, `HomeFiles` |
 | `internal/tools/opencode.go` | Opencode tool registration |
-| `internal/tools/copilot.go` | Copilot tool registration |

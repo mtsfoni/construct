@@ -16,7 +16,7 @@ browser automation in a single session.
 ## Behaviour
 
 ```
-construct --tool opencode --stack dotnet-ui --mcp --port 5000 .
+construct --stack dotnet-ui --mcp --port 5000 .
 ```
 
 Produces a `construct-dotnet-ui` Docker image. The agent has:

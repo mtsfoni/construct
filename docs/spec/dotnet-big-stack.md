@@ -23,8 +23,8 @@ Add two new stacks:
 ## Behaviour
 
 ```
-construct --tool opencode --stack dotnet-big .
-construct --tool opencode --stack dotnet-big-ui --mcp --port 5000 .
+construct --stack dotnet-big .
+construct --stack dotnet-big-ui --mcp --port 5000 .
 ```
 
 ### `dotnet-big`

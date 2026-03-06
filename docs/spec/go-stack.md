@@ -11,7 +11,7 @@ Add a `go` stack built on top of `construct-base` that installs the Go toolchain
 ## Behaviour
 
 ```
-construct --tool <tool> --stack go [path]
+construct --stack go [path]
 ```
 
 Produces a `construct-go` Docker image that extends `construct-base` with Go installed at `/usr/local/go`. `go`, `gofmt`, and all standard toolchain binaries are available on `PATH`.

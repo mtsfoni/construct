@@ -8,7 +8,7 @@ import (
 
 // Tool defines how an AI coding tool is installed, configured, and invoked inside the agent container.
 type Tool struct {
-	// Name is the tool identifier used on the CLI (e.g. "copilot", "opencode").
+	// Name is the tool identifier used in image names and volume names (e.g. "opencode").
 	Name string
 	// InstallCmds are shell commands run as root during image build to install the tool.
 	InstallCmds []string
@@ -33,6 +33,11 @@ var registry = map[string]*Tool{}
 // register adds a Tool to the global registry; called from each tool's init().
 func register(t *Tool) {
 	registry[t.Name] = t
+}
+
+// Opencode returns the opencode tool definition.
+func Opencode() *Tool {
+	return registry["opencode"]
 }
 
 // Get returns the named Tool or an error if it is not registered.

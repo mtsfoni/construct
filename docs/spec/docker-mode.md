@@ -11,7 +11,7 @@ At the same time, some users want Docker-outside-of-Docker (DooD) instead of Din
 Introduce a `--docker` flag that selects the Docker access mode. The default is `none` — no Docker — matching the principle of least privilege.
 
 ```
-construct --tool <tool> --docker <mode> [...]
+construct --docker <mode> [...]
 ```
 
 ## Modes
@@ -32,12 +32,12 @@ The entrypoint always writes `~/.config/opencode/AGENTS.md`. The networking sect
 
 ## Persistence
 
-The selected mode is saved alongside `--tool`, `--stack`, `--mcp`, and `--port` in `~/.construct/last-used.json` under the `"docker"` key (omitted when empty, i.e. legacy entries produced before this flag existed):
+The selected mode is saved alongside `--stack`, `--mcp`, and `--port` in `~/.construct/last-used.json` under the `"docker"` key (omitted when empty, i.e. legacy entries produced before this flag existed):
 
 ```json
 {
-  "/home/alice/projects/api": { "tool": "opencode", "stack": "go", "docker": "dind" },
-  "/home/alice/projects/web": { "tool": "opencode", "stack": "base" }
+  "/home/alice/projects/api": { "stack": "go", "docker": "dind" },
+  "/home/alice/projects/web": { "stack": "base" }
 }
 ```
 
@@ -48,7 +48,7 @@ When `qs` loads a legacy entry (no `"docker"` key), it defaults to `"none"`.
 `construct qs` now prints the full set of replayed flags, including `--docker`:
 
 ```
-construct qs: reusing --tool opencode --stack go --docker dind
+construct qs: reusing --stack go --docker dind
 ```
 
 ## Files changed
@@ -56,8 +56,7 @@ construct qs: reusing --tool opencode --stack go --docker dind
 | File | Change |
 |------|--------|
 | `internal/runner/runner.go` | Add `DockerMode string` to `Config`; gate dind sidecar on `"dind"`; update `buildRunArgs` to handle all three modes; update entrypoint to write mode-aware AGENTS.md |
-| `internal/config/lastused.go` | Add `DockerMode string` to `LastUsed`; add `dockerMode` param to `SaveLastUsed` |
-| `cmd/construct/main.go` | Add `--docker` flag to `runAgent`; validate mode; pass to `runner.Config` and `SaveLastUsed`; update `runQuickstart` to print and replay all flags |
+| `internal/config/lastused.go` | Add `DockerMode string` to `LastUsed`; add `dockerMode` param to `SaveLastUsed` || `cmd/construct/main.go` | Add `--docker` flag to `runAgent`; validate mode; pass to `runner.Config` and `SaveLastUsed`; update `runQuickstart` to print and replay all flags |
 | `internal/config/lastused_test.go` | Update `SaveLastUsed` call sites; add `DockerMode` round-trip tests |
 | `internal/runner/runner_test.go` | Update `fakeConfig`; add `TestBuildRunArgs_NoneMode_*`, `TestBuildRunArgs_DoodMode_*`, `TestBuildRunArgs_DindMode_*`, `TestBuildRunArgs_DockerModeEnvAlwaysPresent` |
 | `docs/spec/docker-mode.md` | This document |

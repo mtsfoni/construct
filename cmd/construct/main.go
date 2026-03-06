@@ -50,12 +50,9 @@ func main() {
 
 // runAgent is the original construct behaviour: build images and launch the agent.
 func runAgent(args []string) {
-	allTools := tools.All()
-	sort.Strings(allTools)
 	allStacks := stacks.All()
 
 	fs := flag.NewFlagSet("construct", flag.ExitOnError)
-	toolName := fs.String("tool", "", "AI tool to run: "+strings.Join(allTools, ", "))
 	stackName := fs.String("stack", "base", "Stack image to use: "+strings.Join(allStacks, ", "))
 	rebuild := fs.Bool("rebuild", false, "Force rebuild of the stack and tool images")
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
@@ -66,17 +63,13 @@ func runAgent(args []string) {
 	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct --tool <tool> [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
-		fmt.Fprintf(os.Stderr, "  qs        Re-run the last tool/stack used in the current repo\n\n")
+		fmt.Fprintf(os.Stderr, "  qs        Re-run the last stack used in the current repo\n\n")
 		fmt.Fprintf(os.Stderr, "Other flags:\n")
 		fmt.Fprintf(os.Stderr, "  --version  Print the construct version and exit\n\n")
-		fmt.Fprintf(os.Stderr, "Available tools:\n")
-		for _, t := range allTools {
-			fmt.Fprintf(os.Stderr, "  %s\n", t)
-		}
-		fmt.Fprintf(os.Stderr, "\nAvailable stacks:\n")
+		fmt.Fprintf(os.Stderr, "Available stacks:\n")
 		for _, s := range allStacks {
 			fmt.Fprintf(os.Stderr, "  %s\n", s)
 		}
@@ -85,12 +78,11 @@ func runAgent(args []string) {
 		fmt.Fprintf(os.Stderr, "  dood   Docker-outside-of-Docker: bind-mounts the host socket (/var/run/docker.sock)\n")
 		fmt.Fprintf(os.Stderr, "  dind   Docker-in-Docker: starts a privileged dind sidecar container\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack dotnet /path/to/repo\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool copilot --stack base .\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack go ~/projects/myapp\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --stack ui --mcp --port 3000 --port 8080 .\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --docker dood .\n")
-		fmt.Fprintf(os.Stderr, "  construct --tool opencode --docker dind .\n\n")
+		fmt.Fprintf(os.Stderr, "  construct --stack dotnet /path/to/repo\n")
+		fmt.Fprintf(os.Stderr, "  construct --stack go ~/projects/myapp\n")
+		fmt.Fprintf(os.Stderr, "  construct --stack ui --mcp --port 3000 --port 8080 .\n")
+		fmt.Fprintf(os.Stderr, "  construct --docker dood .\n")
+		fmt.Fprintf(os.Stderr, "  construct --docker dind .\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -99,16 +91,7 @@ func runAgent(args []string) {
 		os.Exit(1)
 	}
 
-	if *toolName == "" {
-		fmt.Fprintln(os.Stderr, "error: --tool is required")
-		fs.Usage()
-		os.Exit(1)
-	}
-
-	tool, err := tools.Get(*toolName)
-	if err != nil {
-		log.Fatal(err)
-	}
+	tool := tools.Opencode()
 
 	if !stacks.IsValid(*stackName) {
 		log.Fatalf("unknown stack %q; supported stacks: %s", *stackName, strings.Join(allStacks, ", "))
@@ -134,7 +117,7 @@ func runAgent(args []string) {
 	}
 
 	// Persist so `construct qs` can replay this invocation.
-	if err := config.SaveLastUsed(absRepoPath, *toolName, *stackName, *mcp, []string(ports), *dockerMode); err != nil {
+	if err := config.SaveLastUsed(absRepoPath, *stackName, *mcp, []string(ports), *dockerMode); err != nil {
 		log.Printf("warning: could not save last-used settings: %v", err)
 	}
 
@@ -246,12 +229,12 @@ func targetEnvFile(local bool) (string, error) {
 	return config.GlobalFile()
 }
 
-// runQuickstart re-runs the last tool/stack recorded for the target repo.
+// runQuickstart re-runs the last stack recorded for the target repo.
 func runQuickstart(args []string) {
 	fs := flag.NewFlagSet("construct qs", flag.ExitOnError)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: construct qs [path]\n\n")
-		fmt.Fprintf(os.Stderr, "Re-runs the last tool and stack used for the given repo (defaults to cwd).\n")
+		fmt.Fprintf(os.Stderr, "Re-runs the last stack used for the given repo (defaults to cwd).\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
@@ -273,7 +256,7 @@ func runQuickstart(args []string) {
 	if err != nil {
 		log.Fatalf("qs: load last-used: %v", err)
 	}
-	if last.Tool == "" {
+	if last.Stack == "" {
 		log.Fatalf("qs: no previous run recorded for %s", absRepoPath)
 	}
 
@@ -284,7 +267,7 @@ func runQuickstart(args []string) {
 	}
 
 	// Build the status line showing every flag that will be replayed.
-	statusLine := fmt.Sprintf("construct qs: reusing --tool %s --stack %s --docker %s", last.Tool, last.Stack, dockerMode)
+	statusLine := fmt.Sprintf("construct qs: reusing --stack %s --docker %s", last.Stack, dockerMode)
 	if last.MCP {
 		statusLine += " --mcp"
 	}
@@ -293,7 +276,7 @@ func runQuickstart(args []string) {
 	}
 	fmt.Fprintln(os.Stderr, statusLine)
 
-	agentArgs := []string{"--tool", last.Tool, "--stack", last.Stack, "--docker", dockerMode}
+	agentArgs := []string{"--stack", last.Stack, "--docker", dockerMode}
 	if last.MCP {
 		agentArgs = append(agentArgs, "--mcp")
 	}

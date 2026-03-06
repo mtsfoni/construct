@@ -8,16 +8,6 @@ import (
 	"testing"
 )
 
-// TestMCPFlag_MissingTool_StillErrors verifies that --mcp does not suppress
-// the --tool required error.
-func TestMCPFlag_MissingTool_StillErrors(t *testing.T) {
-	home := t.TempDir()
-	_, code := run(t, home, "", "--mcp")
-	if code == 0 {
-		t.Error("expected non-zero exit when --tool is missing, even with --mcp")
-	}
-}
-
 // TestMCPFlag_AppearsInUsage verifies --mcp is documented in the usage output.
 func TestMCPFlag_AppearsInUsage(t *testing.T) {
 	home := t.TempDir()

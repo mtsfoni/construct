@@ -60,7 +60,6 @@ preventing partial writes.
 
 ```bash
 # Set credentials globally
-construct config set GH_TOKEN ghp_abc123
 construct config set ANTHROPIC_API_KEY sk-ant-xyz
 
 # Override for a single repo
@@ -71,10 +70,9 @@ construct config set --local ANTHROPIC_API_KEY sk-ant-different
 construct config list
 # Keys configured in /home/alice/.construct/.env:
 #   ANTHROPIC_API_KEY=****
-#   GH_TOKEN=****
 
 # Remove a key
-construct config unset GH_TOKEN
+construct config unset ANTHROPIC_API_KEY
 ```
 
 ## Implementation

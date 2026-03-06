@@ -244,30 +244,6 @@ func TestBuildRunArgs_GlobalCommandsNotMountedWhenDirAbsent(t *testing.T) {
 	}
 }
 
-// TestBuildRunArgs_GlobalCommandsNotMountedForOtherTools verifies that the
-// opencode commands directory is not mounted for tools other than "opencode".
-func TestBuildRunArgs_GlobalCommandsNotMountedForOtherTools(t *testing.T) {
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	// Create the directory — it exists, but the tool is not opencode.
-	commandsDir := filepath.Join(fakeHome, ".config", "opencode", "commands")
-	if err := os.MkdirAll(commandsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := fakeConfig(t, nil)
-	cfg.Tool = &tools.Tool{Name: "copilot", RunCmd: []string{"copilot"}}
-
-	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
-
-	for i, arg := range args {
-		if arg == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "opencode/commands") {
-			t.Errorf("unexpected commands mount for non-opencode tool: %s", args[i+1])
-		}
-	}
-}
-
 func TestWriteSecretFiles_CreatesFiles(t *testing.T) {
 	env := map[string]string{
 		"TOKEN_A": "aaa",
@@ -863,6 +839,20 @@ func TestGeneratedEntrypoint_AgentsMD_WorkspaceAndIsolationContent(t *testing.T)
 		if !strings.Contains(script, c.snippet) {
 			t.Errorf("entrypoint AGENTS.md: expected %s (snippet %q not found)", c.desc, c.snippet)
 		}
+	}
+}
+
+// TestGeneratedEntrypoint_AgentsMD_HeredocIsQuoted verifies that the heredoc
+// that writes the static workspace/isolation content of AGENTS.md uses a
+// quoted delimiter (<< 'AGENTSEOF'). An unquoted delimiter causes the shell to
+// perform command substitution on backtick-wrapped paths like `/workspace` and
+// `/home/agent`, which results in "Permission denied" errors on startup.
+func TestGeneratedEntrypoint_AgentsMD_HeredocIsQuoted(t *testing.T) {
+	script := generatedEntrypoint()
+	// The first AGENTS.md heredoc must use a quoted delimiter to suppress
+	// backtick expansion. The line must contain << 'AGENTSEOF', not << AGENTSEOF.
+	if !strings.Contains(script, "<< 'AGENTSEOF'") {
+		t.Error("entrypoint: AGENTS.md initial heredoc must use a quoted delimiter (<< 'AGENTSEOF') to prevent backtick command substitution on paths like `/workspace` and `/home/agent`")
 	}
 }
 

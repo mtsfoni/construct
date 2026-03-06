@@ -63,7 +63,7 @@ func run(t *testing.T, home, cwd string, args ...string) (stdout string, exitCod
 
 func TestConfigSet_WritesToGlobalFile(t *testing.T) {
 	home := t.TempDir()
-	out, code := run(t, home, "", "config", "set", "GH_TOKEN", "ghp_test123")
+	out, code := run(t, home, "", "config", "set", "ANTHROPIC_API_KEY", "sk-ant-test123")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, out)
 	}
@@ -73,8 +73,8 @@ func TestConfigSet_WritesToGlobalFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env file: %v", err)
 	}
-	if !strings.Contains(string(content), "GH_TOKEN=ghp_test123") {
-		t.Errorf("file content = %q, want it to contain GH_TOKEN=ghp_test123", string(content))
+	if !strings.Contains(string(content), "ANTHROPIC_API_KEY=sk-ant-test123") {
+		t.Errorf("file content = %q, want it to contain ANTHROPIC_API_KEY=sk-ant-test123", string(content))
 	}
 }
 
@@ -165,7 +165,7 @@ func TestConfigUnset_NoopWhenFileAbsent(t *testing.T) {
 func TestConfigList_ShowsKeys(t *testing.T) {
 	home := t.TempDir()
 	run(t, home, "", "config", "set", "ANTHROPIC_API_KEY", "sk-ant-secret")
-	run(t, home, "", "config", "set", "GH_TOKEN", "ghp_secret")
+	run(t, home, "", "config", "set", "OPENAI_API_KEY", "sk-openai-secret")
 
 	out, code := run(t, home, "", "config", "list")
 	if code != 0 {
@@ -175,8 +175,8 @@ func TestConfigList_ShowsKeys(t *testing.T) {
 	if !strings.Contains(out, "ANTHROPIC_API_KEY") {
 		t.Errorf("output missing ANTHROPIC_API_KEY:\n%s", out)
 	}
-	if !strings.Contains(out, "GH_TOKEN") {
-		t.Errorf("output missing GH_TOKEN:\n%s", out)
+	if !strings.Contains(out, "OPENAI_API_KEY") {
+		t.Errorf("output missing OPENAI_API_KEY:\n%s", out)
 	}
 }
 

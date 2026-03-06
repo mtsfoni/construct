@@ -22,7 +22,7 @@ See [`docs/spec/mcp-flag.md`](mcp-flag.md) for the full specification of the
 
 ### ui stack image
 
-`construct --tool opencode --stack ui --mcp .`
+`construct --stack ui --mcp .`
 
 Produces a `construct-ui` Docker image that extends `construct-base` with:
 
@@ -56,7 +56,7 @@ creation. To remove the stale file from an existing volume, run once with
 `--reset`:
 
 ```bash
-construct --tool opencode --stack ui --reset .
+construct --stack ui --reset .
 ```
 
 ## Files changed

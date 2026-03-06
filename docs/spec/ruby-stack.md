@@ -11,7 +11,7 @@ Add a `ruby` stack built on top of `construct-base` that installs Ruby via the U
 ## Behaviour
 
 ```
-construct --tool <tool> --stack ruby [path]
+construct --stack ruby [path]
 ```
 
 Produces a `construct-ruby` Docker image that extends `construct-base` with:

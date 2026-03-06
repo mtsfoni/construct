@@ -396,7 +396,7 @@ func generatedEntrypoint() string {
 		"# to inform the agent that it is running inside a construct container.\n" +
 		"# The networking section depends on CONSTRUCT_DOCKER_MODE.\n" +
 		"mkdir -p \"${HOME}/.config/opencode\"\n" +
-		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
+		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << 'AGENTSEOF'\n" +
 		"# Construct container context\n" +
 		"\n" +
 		"You are running inside a construct container.\n" +

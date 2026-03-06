@@ -1,6 +1,8 @@
 # construct
 
-Run AI coding agents in yolo/auto-approve mode without giving them access to your actual machine. Not a perfect sandbox, but meaningfully better than running directly on your host. By default the agent has no Docker access; opt in to Docker-in-Docker or Docker-outside-of-Docker when your workload needs it.
+Run [opencode](https://opencode.ai) in an isolated Docker container. The agent gets your repository and a language runtime; it cannot reach the rest of your machine. Not a perfect sandbox, but meaningfully better than running directly on your host.
+
+A side-effect: you never need to install language runtimes locally — pick a stack and the container has everything.
 
 > **Linux and Windows.** construct requires a Docker host (Docker Desktop, Engine, or OrbStack). Docker Desktop on macOS is not yet supported.
 
@@ -49,7 +51,7 @@ go build -o construct ./cmd/construct
 ## Usage
 
 ```
-construct --tool <tool> [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
+construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path]
 construct config <set|unset|list> [--local] [KEY [VALUE]]
 construct qs [path]
 ```
@@ -57,18 +59,16 @@ construct qs [path]
 `path` defaults to the current working directory.
 
 ```bash
-construct --tool opencode --stack dotnet /path/to/repo
-construct --tool copilot --stack base .
-construct --tool opencode --stack go ~/projects/myapp
-construct --tool opencode --stack ui --mcp --port 3000 .
-construct --tool opencode --stack go --docker dind .
+construct --stack dotnet /path/to/repo
+construct --stack go ~/projects/myapp
+construct --stack ui --mcp --port 3000 .
+construct --stack go --docker dind .
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--tool` | *(required)* | AI tool to run: `copilot`, `opencode` |
 | `--stack` | `base` | Language stack: `base`, `dotnet`, `dotnet-big`, `dotnet-big-ui`, `dotnet-ui`, `go`, `ruby`, `ruby-ui`, `ui` |
 | `--docker` | `none` | Docker access mode: `none` (no Docker), `dood` (share host socket), `dind` (isolated Docker-in-Docker sidecar) |
 | `--rebuild` | `false` | Force rebuild of stack and tool images |
@@ -86,13 +86,12 @@ After running `construct` at least once in a repo, replay the exact same invocat
 construct qs [path]
 ```
 
-`qs` restores the last `--tool`, `--stack`, `--docker`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
+`qs` restores the last `--stack`, `--docker`, `--mcp`, and all `--port` values used for that repo. Settings are stored in `~/.construct/last-used.json`.
 
 ## Supported tools
 
 | Tool | Package | Yolo mode |
 |------|---------|-----------|
-| `copilot` | `@github/copilot` (npm) | `copilot --yolo` |
 | `opencode` | `opencode-ai` (npm) | `OPENCODE_PERMISSION={"*":"allow"}` |
 
 ## Supported stacks
@@ -115,7 +114,6 @@ Use `construct config` to manage credentials without editing files by hand:
 
 ```bash
 # Store a credential globally (~/.construct/.env)
-construct config set GH_TOKEN ghp_...
 construct config set ANTHROPIC_API_KEY sk-ant-...
 
 # Override a credential for one repo only (.construct/.env in the repo root)
@@ -125,7 +123,7 @@ construct config set --local ANTHROPIC_API_KEY sk-ant-...
 construct config list
 
 # Remove a credential
-construct config unset GH_TOKEN
+construct config unset ANTHROPIC_API_KEY
 ```
 
 Credentials are stored as plain text in `~/.construct/.env`, with mode `0600`.
@@ -135,7 +133,6 @@ a per-repo file, add `.construct/.env` to the repo's `.gitignore`.
 
 | Tool | Required credential |
 |------|-------------------|
-| `copilot` | `GH_TOKEN` — a GitHub PAT with Copilot access |
 | `opencode` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other [supported provider key](https://opencode.ai/docs/providers). Alternatively, run `/connect` inside the opencode TUI to authenticate interactively — credentials are written to a **global auth volume** (`construct-auth-opencode`) that persists across repos and survives `--reset`. |
 
 > Credentials are injected into the container via bind-mounted files, not as
@@ -146,8 +143,7 @@ a per-repo file, add `.construct/.env` to the repo's `.gitignore`.
 
 The entire repo is bind-mounted at `/workspace`, so any instruction files already in the repo are available to the agent automatically — no special mounting needed. Place instructions wherever the tool expects them:
 
-- `.github/copilot-instructions.md` — picked up by GitHub Copilot
-- `AGENTS.md` — picked up by OpenCode and other tools that follow the Agents convention
+- `AGENTS.md` — picked up by opencode and other tools that follow the Agents convention
 
 construct also injects a global `~/.config/opencode/AGENTS.md` into every session that tells the agent it is running inside a construct container. The content of this file is mode-aware: in `dind` mode it includes Docker usage guidance and Testcontainers notes; in `dood` mode it warns that the agent is sharing the host Docker daemon; in `none` mode no Docker guidance is included. When `--port` is used, this file also contains server binding rules (bind to `0.0.0.0`, use the published ports) so the agent's dev server is reachable from the host browser.
 

@@ -16,7 +16,7 @@ and browser automation in a single session.
 ## Behaviour
 
 ```
-construct --tool opencode --stack ruby-ui --mcp --port 4000 .
+construct --stack ruby-ui --mcp --port 4000 .
 ```
 
 Produces a `construct-ruby-ui` Docker image. The agent has:

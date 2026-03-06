@@ -26,7 +26,7 @@ func TestSaveAndLoadLastUsed_RoundTrip(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	if err := config.SaveLastUsed(repo, "copilot", "node", false, nil, ""); err != nil {
+	if err := config.SaveLastUsed(repo, "base", false, nil, ""); err != nil {
 		t.Fatalf("SaveLastUsed: %v", err)
 	}
 
@@ -34,8 +34,8 @@ func TestSaveAndLoadLastUsed_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLastUsed: %v", err)
 	}
-	if got.Tool != "copilot" || got.Stack != "node" {
-		t.Errorf("got {%s %s}, want {copilot node}", got.Tool, got.Stack)
+	if got.Stack != "base" {
+		t.Errorf("got stack %q, want %q", got.Stack, "base")
 	}
 }
 
@@ -46,7 +46,7 @@ func TestLoadLastUsed_ReturnsZeroWhenNoEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLastUsed: %v", err)
 	}
-	if got.Tool != "" || got.Stack != "" {
+	if got.Stack != "" {
 		t.Errorf("expected zero LastUsed, got %+v", got)
 	}
 }
@@ -58,8 +58,8 @@ func TestLoadLastUsed_ReturnsZeroWhenFileAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLastUsed on missing file: %v", err)
 	}
-	if got.Tool != "" {
-		t.Errorf("expected empty Tool, got %q", got.Tool)
+	if got.Stack != "" {
+		t.Errorf("expected empty Stack, got %q", got.Stack)
 	}
 }
 
@@ -67,15 +67,15 @@ func TestSaveLastUsed_UpdatesExistingEntry(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "copilot", "node", false, nil, ""))
-	must(t, config.SaveLastUsed(repo, "opencode", "python", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "base", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
 		t.Fatalf("LoadLastUsed: %v", err)
 	}
-	if got.Tool != "opencode" || got.Stack != "python" {
-		t.Errorf("got {%s %s}, want {opencode python}", got.Tool, got.Stack)
+	if got.Stack != "go" {
+		t.Errorf("got stack %q, want %q", got.Stack, "go")
 	}
 }
 
@@ -84,8 +84,8 @@ func TestSaveLastUsed_IndependentEntriesPerRepo(t *testing.T) {
 
 	repo1 := t.TempDir()
 	repo2 := t.TempDir()
-	must(t, config.SaveLastUsed(repo1, "copilot", "node", false, nil, ""))
-	must(t, config.SaveLastUsed(repo2, "opencode", "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo1, "base", false, nil, ""))
+	must(t, config.SaveLastUsed(repo2, "go", false, nil, ""))
 
 	g1, err := config.LoadLastUsed(repo1)
 	if err != nil {
@@ -96,11 +96,11 @@ func TestSaveLastUsed_IndependentEntriesPerRepo(t *testing.T) {
 		t.Fatalf("LoadLastUsed repo2: %v", err)
 	}
 
-	if g1.Tool != "copilot" || g1.Stack != "node" {
-		t.Errorf("repo1: got {%s %s}, want {copilot node}", g1.Tool, g1.Stack)
+	if g1.Stack != "base" {
+		t.Errorf("repo1: got stack %q, want %q", g1.Stack, "base")
 	}
-	if g2.Tool != "opencode" || g2.Stack != "go" {
-		t.Errorf("repo2: got {%s %s}, want {opencode go}", g2.Tool, g2.Stack)
+	if g2.Stack != "go" {
+		t.Errorf("repo2: got stack %q, want %q", g2.Stack, "go")
 	}
 }
 
@@ -110,7 +110,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 	}
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil, ""))
+	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, ""))
 
 	path := filepath.Join(home, ".construct", "last-used.json")
 	info, err := os.Stat(path)
@@ -125,7 +125,7 @@ func TestSaveLastUsed_FilePermissions(t *testing.T) {
 func TestSaveLastUsed_CreatesConstructDir(t *testing.T) {
 	home := withHome(t)
 
-	must(t, config.SaveLastUsed(t.TempDir(), "copilot", "node", false, nil, ""))
+	must(t, config.SaveLastUsed(t.TempDir(), "base", false, nil, ""))
 
 	dir := filepath.Join(home, ".construct")
 	info, err := os.Stat(dir)
@@ -141,7 +141,7 @@ func TestSaveAndLoadLastUsed_MCPAndPorts(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "ui", true, []string{"3000", "8080:8080"}, "dind"))
+	must(t, config.SaveLastUsed(repo, "ui", true, []string{"3000", "8080:8080"}, "dind"))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestSaveAndLoadLastUsed_MCPFalseOmitted(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -180,7 +180,7 @@ func TestSaveAndLoadLastUsed_DockerMode(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, "dind"))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, "dind"))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestSaveAndLoadLastUsed_DockerModeOmittedWhenEmpty(t *testing.T) {
 	withHome(t)
 
 	repo := t.TempDir()
-	must(t, config.SaveLastUsed(repo, "opencode", "go", false, nil, ""))
+	must(t, config.SaveLastUsed(repo, "go", false, nil, ""))
 
 	got, err := config.LoadLastUsed(repo)
 	if err != nil {

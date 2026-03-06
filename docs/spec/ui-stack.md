@@ -17,7 +17,7 @@ Playwright tools directly as MCP tool calls.
 ## Behaviour
 
 ```
-construct --tool opencode --stack ui .
+construct --stack ui .
 ```
 
 Produces a `construct-ui` Docker image that extends `construct-node` with:
@@ -59,4 +59,3 @@ When building `ui`, both `construct-base` and `construct-node` are built first
   pulls the latest at image build time. Pin the version in the Dockerfile when
   stability is required.
 - No VNC or display server; Playwright runs in headless mode only.
-- No changes to the `copilot` tool; browser automation is opencode-specific.
