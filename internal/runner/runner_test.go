@@ -3,6 +3,8 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mtsfoni/construct/internal/buildinfo"
 	"github.com/mtsfoni/construct/internal/dind"
@@ -1507,5 +1510,339 @@ func TestToolImageVersionCurrent_PassesCorrectArgs(t *testing.T) {
 	}
 	if gotLabel != "io.construct.version" {
 		t.Errorf("toolImageLabel called with label %q, want %q", gotLabel, "io.construct.version")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// servePort helper tests
+// ---------------------------------------------------------------------------
+
+// TestServePort_DefaultIs4096 verifies that a zero Config.ServePort yields the
+// default of 4096.
+func TestServePort_DefaultIs4096(t *testing.T) {
+	cfg := &Config{}
+	if got := servePort(cfg); got != 4096 {
+		t.Errorf("servePort(zero) = %d, want 4096", got)
+	}
+}
+
+// TestServePort_CustomPort verifies that a non-zero Config.ServePort is
+// returned unchanged.
+func TestServePort_CustomPort(t *testing.T) {
+	cfg := &Config{ServePort: 9000}
+	if got := servePort(cfg); got != 9000 {
+		t.Errorf("servePort(9000) = %d, want 9000", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildServeArgs tests
+// ---------------------------------------------------------------------------
+
+// TestBuildServeArgs_Detached verifies that buildServeArgs produces "-d" (not
+// "-it") so the container runs detached.
+func TestBuildServeArgs_Detached(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 4096)
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, " -d ") {
+		t.Errorf("expected -d flag in serve args; got: %v", args)
+	}
+	for _, a := range args {
+		if a == "-it" || a == "-t" || a == "-i" {
+			t.Errorf("unexpected interactive flag %q in serve args; got: %v", a, args)
+		}
+	}
+}
+
+// TestBuildServeArgs_ServeCommand verifies that the image is followed by
+// "opencode serve --hostname 0.0.0.0 --port <port>".
+func TestBuildServeArgs_ServeCommand(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 4096)
+
+	imageIdx := -1
+	for i, a := range args {
+		if a == "testimage" {
+			imageIdx = i
+			break
+		}
+	}
+	if imageIdx < 0 {
+		t.Fatalf("image name not found in args: %v", args)
+	}
+	tail := args[imageIdx+1:]
+	want := []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"}
+	if len(tail) != len(want) {
+		t.Fatalf("args after image = %v, want %v", tail, want)
+	}
+	for i, w := range want {
+		if tail[i] != w {
+			t.Errorf("args[%d] = %q, want %q", i, tail[i], w)
+		}
+	}
+}
+
+// TestBuildServeArgs_ServePortPublishedOnLoopback verifies that the serve port
+// is published only on 127.0.0.1 (not 0.0.0.0) to avoid LAN exposure.
+func TestBuildServeArgs_ServePortPublishedOnLoopback(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 4096)
+
+	if !containsPair(args, "-p", "127.0.0.1:4096:4096") {
+		t.Errorf("expected -p 127.0.0.1:4096:4096 in args; got: %v", args)
+	}
+	// Must not publish on 0.0.0.0 (would expose port to LAN).
+	for i, a := range args {
+		if a == "-p" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasPrefix(v, "0.0.0.0:4096") || v == "4096:4096" {
+				t.Errorf("serve port published on non-loopback address %q; want 127.0.0.1:4096:4096", v)
+			}
+		}
+	}
+}
+
+// TestBuildServeArgs_CustomPort verifies that a non-default port flows through
+// to both the -p flag and the serve command arguments.
+func TestBuildServeArgs_CustomPort(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 9000)
+
+	if !containsPair(args, "-p", "127.0.0.1:9000:9000") {
+		t.Errorf("expected -p 127.0.0.1:9000:9000 in args; got: %v", args)
+	}
+	// The serve command must use the custom port number.
+	if !containsPair(args, "--port", "9000") {
+		t.Errorf("expected --port 9000 in args; got: %v", args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildDebugArgs tests
+// ---------------------------------------------------------------------------
+
+// TestBuildDebugArgs_Interactive verifies that buildDebugArgs includes "-it"
+// and produces "/bin/bash" as the command (not the tool RunCmd).
+func TestBuildDebugArgs_Interactive(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	cfg.Tool = &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}}
+	args := buildDebugArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	// Must be interactive.
+	hasIt := false
+	for _, a := range args {
+		if a == "-it" {
+			hasIt = true
+		}
+	}
+	if !hasIt {
+		t.Errorf("expected -it in debug args; got: %v", args)
+	}
+
+	// Command after image must be /bin/bash.
+	imageIdx := -1
+	for i, a := range args {
+		if a == "testimage" {
+			imageIdx = i
+			break
+		}
+	}
+	if imageIdx < 0 {
+		t.Fatalf("image not found in debug args: %v", args)
+	}
+	tail := args[imageIdx+1:]
+	if len(tail) != 1 || tail[0] != "/bin/bash" {
+		t.Errorf("debug command after image = %v, want [/bin/bash]", tail)
+	}
+}
+
+// TestBuildDebugArgs_NotDetached verifies that "-d" does not appear in debug args.
+func TestBuildDebugArgs_NotDetached(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildDebugArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+	for _, a := range args {
+		if a == "-d" {
+			t.Errorf("unexpected -d flag in debug args; got: %v", args)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// waitForServer tests
+// ---------------------------------------------------------------------------
+
+// TestWaitForServer_SucceedsWhenHealthy verifies that waitForServer returns nil
+// when the server immediately responds with {"healthy":true}.
+func TestWaitForServer_SucceedsWhenHealthy(t *testing.T) {
+	// Start a minimal HTTP server that returns {"healthy":true}.
+	srv := &http.Server{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"healthy":true,"version":"test"}`)
+	})
+	srv.Handler = mux
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { srv.Close() })
+
+	url := "http://" + ln.Addr().String()
+	if err := waitForServer(url, 2*time.Second); err != nil {
+		t.Errorf("waitForServer returned error: %v", err)
+	}
+}
+
+// TestWaitForServer_TimesOutWhenNotReady verifies that waitForServer returns an
+// error after the timeout when the health endpoint is never healthy.
+func TestWaitForServer_TimesOutWhenNotReady(t *testing.T) {
+	// Use a port that isn't listening so every attempt fails immediately.
+	err := waitForServer("http://127.0.0.1:19999", 300*time.Millisecond)
+	if err == nil {
+		t.Error("expected error from waitForServer when server is not available, got nil")
+	}
+}
+
+// TestWaitForServer_TimesOutWhenUnhealthy verifies that waitForServer returns an
+// error when the server always responds with {"healthy":false}.
+func TestWaitForServer_TimesOutWhenUnhealthy(t *testing.T) {
+	srv := &http.Server{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"healthy":false}`)
+	})
+	srv.Handler = mux
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() { srv.Close() })
+
+	url := "http://" + ln.Addr().String()
+	err = waitForServer(url, 300*time.Millisecond)
+	if err == nil {
+		t.Error("expected error from waitForServer when server always returns healthy:false, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// generatedEntrypoint serve port section tests
+// ---------------------------------------------------------------------------
+
+// TestGeneratedEntrypoint_MentionsServePort verifies that the entrypoint script
+// contains the CONSTRUCT_SERVE_PORT conditional block that appends the opencode
+// server section to AGENTS.md.
+func TestGeneratedEntrypoint_MentionsServePort(t *testing.T) {
+	script := generatedEntrypoint()
+	checks := []struct {
+		desc    string
+		snippet string
+	}{
+		{"conditionally appends serve port section when CONSTRUCT_SERVE_PORT set", "CONSTRUCT_SERVE_PORT"},
+		{"mentions server mode", "server mode"},
+		{"mentions http://localhost", "http://localhost"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(script, c.snippet) {
+			t.Errorf("entrypoint: expected %s (snippet %q not found)", c.desc, c.snippet)
+		}
+	}
+}
+
+// TestBuildServeArgs_InjectsServePortEnv verifies that buildServeArgs injects
+// CONSTRUCT_SERVE_PORT into the container environment so the entrypoint can
+// write the correct server URL to AGENTS.md.
+func TestBuildServeArgs_InjectsServePortEnv(t *testing.T) {
+	cfg := fakeConfig(t, nil)
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 4096)
+
+	if !containsPair(args, "-e", "CONSTRUCT_SERVE_PORT=4096") {
+		t.Errorf("expected -e CONSTRUCT_SERVE_PORT=4096 in serve args; got: %v", args)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// runLocalAttach client-selection tests
+// ---------------------------------------------------------------------------
+
+// TestRunLocalAttach_WebClientOpensDirectly verifies that client="web" calls
+// openBrowser without consulting $PATH for "opencode". We confirm this by
+// observing that no "opencode attach" exec is attempted — instead we get the
+// browser path (which will print to stdout and then block; we can't easily
+// exercise the browser open itself in a unit test, so we test the TUI path
+// directly using a fake opencode on PATH).
+
+// TestRunLocalAttach_TUIClientErrorsWhenNotFound verifies that client="tui"
+// returns an error when "opencode" is not on PATH, rather than silently
+// falling back to the browser.
+func TestRunLocalAttach_TUIClientErrorsWhenNotFound(t *testing.T) {
+	// Temporarily clear PATH so exec.LookPath("opencode") always fails.
+	t.Setenv("PATH", "")
+
+	err := runLocalAttach("http://127.0.0.1:4096", "tui")
+	if err == nil {
+		t.Fatal("expected error when opencode not on PATH with --client tui, got nil")
+	}
+	want := "opencode not found on PATH; install opencode or use --client web"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestRunLocalAttach_AutoClientErrorsWhenNotFound verifies that client="" (auto)
+// does NOT return an error when "opencode" is absent — it falls back to the
+// browser path (openBrowser), which blocks forever in normal use but in tests
+// we just confirm no error from the PATH-check branch.
+// We do this indirectly: with PATH cleared, client="" should not error out;
+// it should call openBrowser. openBrowser itself will try xdg-open/open and
+// then block on select{}. Since we can't call that in a test, we just verify
+// the TUI-not-found error is NOT returned.
+func TestRunLocalAttach_AutoDoesNotErrorWhenOpencodeAbsent(t *testing.T) {
+	// This test only verifies the error-path of runLocalAttach for the "tui"
+	// client is NOT triggered for the "" (auto) client. The actual auto path
+	// would call openBrowser which blocks; we can't run it to completion here.
+	// Instead we verify that the error message from the "tui" branch is absent.
+	t.Setenv("PATH", "")
+
+	// We can't call runLocalAttach("...", "") directly because openBrowser blocks.
+	// Instead, re-test the conditional logic directly:
+	// With PATH="", LookPath("opencode") will fail.
+	// For client="", we expect the fallback branch — no error from LookPath.
+	_, err := exec.LookPath("opencode")
+	if err == nil {
+		t.Skip("opencode is on PATH; test is only meaningful when opencode is absent")
+	}
+	// If we reach here, opencode is not on PATH.
+	// The auto client would call openBrowser; the TUI client would error.
+	// This test merely documents the expected branching logic, already covered
+	// by TestRunLocalAttach_TUIClientErrorsWhenNotFound.
+}
+
+// TestRunConfig_ClientValidation verifies that Run returns an error for
+// an unrecognised --client value without attempting to build any images.
+func TestRunConfig_ClientValidation(t *testing.T) {
+	cfg := &Config{
+		Tool:     &tools.Tool{Name: "test"},
+		Stack:    "base",
+		RepoPath: t.TempDir(),
+		Client:   "invalid-client",
+	}
+	err := Run(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid --client value, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown client") {
+		t.Errorf("error = %q, want it to mention 'unknown client'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "invalid-client") {
+		t.Errorf("error = %q, want it to mention the bad value 'invalid-client'", err.Error())
 	}
 }

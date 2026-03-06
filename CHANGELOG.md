@@ -3,7 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **Serve mode** — `construct run` now starts `opencode serve` headlessly inside the container (`docker run -d`) and connects a local client from the host. The local client is `opencode attach <url>` when `opencode` is on `$PATH`, or the system default browser as a fallback. This eliminates TUI-in-container rendering issues and lets users interact through their own local opencode setup.
+- **Headless mode** — when passthrough args are provided (`construct [path] -- "message"`), `opencode run --attach <url> <args...>` is run locally instead of launching an interactive TUI.
+- **`--serve-port` flag** — sets the port for the opencode HTTP server inside the container (default `4096`). Distinct from `--port` (application ports). Saved to `last-used.json` and replayed by `construct qs`.
 - **Pass-through args (`--`)** — both `construct [flags] [path] -- <tool-args>` and `construct qs [path] -- <tool-args>` now forward everything after the bare `--` separator verbatim to the tool inside the container (e.g. `construct qs -- continue-session <session-id>`). Pass-through args are not persisted to last-used settings. Debug mode (`--debug`) ignores them.
+- **`--client` flag** — explicitly choose the local client that connects to the opencode server: `tui` (always `opencode attach`; errors if opencode not on PATH), `web` (always opens browser directly), or omit for auto-detect (default: `opencode attach` if on PATH, browser otherwise). `--client web` is incompatible with passthrough args (headless mode requires opencode). Saved to `last-used.json` and replayed by `construct qs`.
 
 ### Fixed
 - **Container startup "Permission denied" errors** — the entrypoint script's heredoc that writes `~/.config/opencode/AGENTS.md` used an unquoted delimiter, causing the shell to treat backtick-wrapped paths (`` `/workspace` ``, `` `/home/agent` ``) as command substitutions. The delimiter is now quoted (`<< 'AGENTSEOF'`), preventing the errors `/workspace: Permission denied` and `/home/agent: Permission denied` on startup.

@@ -19,6 +19,10 @@ construct qs [path] -- [tool-args...]
 - The `[path]` positional and all `construct` flags are parsed from the portion **before** `--`.
 - If `--` is absent the behaviour is identical to today (no change in the default case).
 - `--debug` mode (`/bin/bash`) still ignores pass-through args — there is nothing useful to forward to a shell.
+- `--client web` is incompatible with pass-through args: headless mode requires `opencode run --attach`, so a browser-only client cannot be used. Passing both results in a fatal error:
+  ```
+  --client web is incompatible with passthrough args (headless requires opencode)
+  ```
 
 ### Examples
 

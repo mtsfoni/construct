@@ -74,11 +74,13 @@ func runAgent(args []string) {
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
 	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
 	dockerMode := fs.String("docker", "none", "Docker access mode: none (default, no Docker), dood (Docker-outside-of-Docker via host socket), dind (Docker-in-Docker sidecar)")
+	servePort := fs.Int("serve-port", 0, "Port for the opencode HTTP server inside the container (default 4096)")
+	client := fs.String("client", "", "Local client to connect to the opencode server: tui (opencode attach), web (browser), or empty for auto-detect")
 	var ports portFlag
 	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [path] [-- <tool-args>]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [--serve-port <port>] [--client <tui|web>] [path] [-- <tool-args>]\n\n")
 		fmt.Fprintf(os.Stderr, "Subcommands:\n")
 		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
 		fmt.Fprintf(os.Stderr, "  qs        Re-run the last stack used in the current repo\n\n")
@@ -95,12 +97,17 @@ func runAgent(args []string) {
 		fmt.Fprintf(os.Stderr, "  none   No Docker access inside the agent container (default)\n")
 		fmt.Fprintf(os.Stderr, "  dood   Docker-outside-of-Docker: bind-mounts the host socket (/var/run/docker.sock)\n")
 		fmt.Fprintf(os.Stderr, "  dind   Docker-in-Docker: starts a privileged dind sidecar container\n")
+		fmt.Fprintf(os.Stderr, "\nClient modes (--client):\n")
+		fmt.Fprintf(os.Stderr, "  <empty>  Auto-detect: opencode attach if opencode on PATH, else browser (default)\n")
+		fmt.Fprintf(os.Stderr, "  tui      Always use opencode attach; error if opencode not on PATH\n")
+		fmt.Fprintf(os.Stderr, "  web      Always open browser directly\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  construct --stack dotnet /path/to/repo\n")
 		fmt.Fprintf(os.Stderr, "  construct --stack go ~/projects/myapp\n")
 		fmt.Fprintf(os.Stderr, "  construct --stack ui --mcp --port 3000 --port 8080 .\n")
 		fmt.Fprintf(os.Stderr, "  construct --docker dood .\n")
-		fmt.Fprintf(os.Stderr, "  construct --docker dind .\n\n")
+		fmt.Fprintf(os.Stderr, "  construct --docker dind .\n")
+		fmt.Fprintf(os.Stderr, "  construct --client web .\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		fs.PrintDefaults()
 	}
@@ -122,6 +129,13 @@ func runAgent(args []string) {
 		log.Fatalf("unknown docker mode %q; supported modes: none, dood, dind", *dockerMode)
 	}
 
+	switch *client {
+	case "", "tui", "web":
+		// valid
+	default:
+		log.Fatalf("unknown client %q; supported values: tui, web", *client)
+	}
+
 	repoPath := "."
 	if fs.NArg() > 0 {
 		repoPath = fs.Arg(0)
@@ -136,7 +150,7 @@ func runAgent(args []string) {
 
 	// Persist so `construct qs` can replay this invocation.
 	// Pass-through args (after --) are not persisted.
-	if err := config.SaveLastUsed(absRepoPath, *stackName, *mcp, []string(ports), *dockerMode); err != nil {
+	if err := config.SaveLastUsed(absRepoPath, *stackName, *mcp, []string(ports), *dockerMode, *servePort, *client); err != nil {
 		log.Printf("warning: could not save last-used settings: %v", err)
 	}
 
@@ -151,6 +165,8 @@ func runAgent(args []string) {
 		Ports:      []string(ports),
 		DockerMode: *dockerMode,
 		ExtraArgs:  passthroughArgs,
+		ServePort:  *servePort,
+		Client:     *client,
 	}); err != nil {
 		log.Fatal(err)
 	}
@@ -297,6 +313,12 @@ func runQuickstart(args []string) {
 	for _, p := range last.Ports {
 		statusLine += " --port " + p
 	}
+	if last.ServePort != 0 {
+		statusLine += fmt.Sprintf(" --serve-port %d", last.ServePort)
+	}
+	if last.Client != "" {
+		statusLine += " --client " + last.Client
+	}
 	fmt.Fprintln(os.Stderr, statusLine)
 
 	agentArgs := []string{"--stack", last.Stack, "--docker", dockerMode}
@@ -305,6 +327,12 @@ func runQuickstart(args []string) {
 	}
 	for _, p := range last.Ports {
 		agentArgs = append(agentArgs, "--port", p)
+	}
+	if last.ServePort != 0 {
+		agentArgs = append(agentArgs, "--serve-port", fmt.Sprintf("%d", last.ServePort))
+	}
+	if last.Client != "" {
+		agentArgs = append(agentArgs, "--client", last.Client)
 	}
 	agentArgs = append(agentArgs, absRepoPath)
 	// Pass-through args are appended after -- so runAgent's splitPassthrough

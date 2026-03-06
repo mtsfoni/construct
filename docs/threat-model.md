@@ -195,6 +195,18 @@ The agent does **not** have access to:
 
 ---
 
+### T12 — opencode HTTP server port exposure
+
+| | |
+|---|---|
+| **Scenario** | Another process on the host (or a local network attacker if loopback filtering fails) connects to the opencode HTTP server port (`127.0.0.1:<serve-port>`) and issues API calls — reading or writing session state, injecting prompts, or accessing work in progress. |
+| **Mitigation** | The opencode server is bound to `0.0.0.0` inside the container (necessary so the host can reach it through the published port), but the port is published **loopback-only**: `127.0.0.1:<serve-port>:<serve-port>`. It is not reachable from the LAN. No password is required by default (opencode does not currently enforce auth on its HTTP API). |
+| **Residual risk** | Any process running as the same Unix user on the host can connect to `127.0.0.1:<serve-port>` during the session. An attacker with local code execution (e.g. a malicious npm package in a different terminal) could read or manipulate the active session. The port is open for the full duration of the session. |
+| **Recommendation** | Use `--serve-port` to pick a non-default port if you are concerned about predictable port targeting. A `--serve-password` flag for HTTP bearer auth is a future enhancement. |
+| **vs. host baseline** | Running opencode directly on the host exposes the same HTTP port. construct does not worsen this — the port is loopback-only in both cases. |
+
+---
+
 ## What this tool is not
 
 - **Not a CVE-proof container escape preventer.** Kernel vulnerabilities exist.
@@ -221,6 +233,7 @@ The agent does **not** have access to:
 | Agent escapes to host | Already there | Possible but requires exploit; no privileged sidecar | Possible but requires exploit | Possible but requires exploit |
 | Agent modifies repo files | Yes | Yes | Yes | Yes |
 | Privileged container on host | N/A | None | dind sidecar only | None |
+| opencode HTTP server reachable by local processes | Yes (direct) | Yes (`127.0.0.1:<serve-port>`) | Yes (`127.0.0.1:<serve-port>`) | Yes (`127.0.0.1:<serve-port>`) |
 
 The last two rows of the original table — agent escapes and repo modification — remain the honest limits of what construct provides. Everything else is a meaningful improvement over the baseline.
 
@@ -230,3 +243,4 @@ The last two rows of the original table — agent escapes and repo modification 
 
 - [ADR 001 — Docker secrets for credential injection](adr/001-docker-secrets-for-credentials.md)
 - [Security — credential flow detail](security.md)
+- [Spec — serve mode and local client selection](spec/serve-mode.md)
