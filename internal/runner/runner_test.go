@@ -1162,8 +1162,8 @@ func TestBuildRunArgs_NoneMode_NoDockerHost(t *testing.T) {
 	}
 }
 
-// TestBuildRunArgs_DoodMode_MountsSocket verifies that DooD mode bind-mounts
-// /var/run/docker.sock and sets DOCKER_HOST to the host socket path.
+// TestBuildRunArgs_DoodMode_MountsSocket verifies that DooD mode disables SELinux
+// confinement, bind-mounts the host Docker socket, and sets DOCKER_HOST.
 func TestBuildRunArgs_DoodMode_MountsSocket(t *testing.T) {
 	cfg := &Config{
 		Tool:       fakeConfig(t, nil).Tool,
@@ -1173,8 +1173,14 @@ func TestBuildRunArgs_DoodMode_MountsSocket(t *testing.T) {
 	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
 	joined := strings.Join(args, " ")
 
+	if !containsPair(args, "--security-opt", "label=disable") {
+		t.Errorf("expected --security-opt label=disable in dood mode; got: %v", args)
+	}
 	if !strings.Contains(joined, "/var/run/docker.sock:/var/run/docker.sock") {
 		t.Errorf("expected docker socket bind-mount in dood mode; got: %v", args)
+	}
+	if strings.Contains(joined, "/var/run/docker.sock:/var/run/docker.sock:z") {
+		t.Errorf("expected no :z on docker socket bind-mount (label=disable makes it redundant); got: %v", args)
 	}
 	if !containsPair(args, "-e", "DOCKER_HOST=unix:///var/run/docker.sock") {
 		t.Errorf("expected -e DOCKER_HOST=unix:///var/run/docker.sock in dood mode; got: %v", args)
@@ -1197,6 +1203,76 @@ func TestBuildRunArgs_DoodMode_NoNetwork(t *testing.T) {
 
 	if strings.Contains(joined, "--network") {
 		t.Errorf("--network must not appear in dood mode; got: %v", args)
+	}
+}
+
+// stubDockerSocketGID replaces dockerSocketGID for the duration of a test.
+func stubDockerSocketGID(t *testing.T, gid string) {
+	t.Helper()
+	orig := dockerSocketGID
+	dockerSocketGID = func() string { return gid }
+	t.Cleanup(func() { dockerSocketGID = orig })
+}
+
+// TestBuildRunArgs_DoodMode_GroupAdd verifies that --group-add is appended with
+// the socket GID when the socket is accessible, making the agent user a member
+// of the host docker group so it can reach the daemon without root.
+func TestBuildRunArgs_DoodMode_GroupAdd(t *testing.T) {
+	stubDockerSocketGID(t, "975")
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	if !containsPair(args, "--group-add", "975") {
+		t.Errorf("expected --group-add 975 in dood mode with socket GID 975; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_DoodMode_GroupAdd_AbsentWhenNoSocket verifies that --group-add
+// is omitted when the socket GID cannot be determined (e.g. socket absent).
+func TestBuildRunArgs_DoodMode_GroupAdd_AbsentWhenNoSocket(t *testing.T) {
+	stubDockerSocketGID(t, "")
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--group-add") {
+		t.Errorf("--group-add must not appear when socket GID is unknown; got: %v", args)
+	}
+}
+
+// TestBuildServeArgs_DoodMode_GroupAdd verifies --group-add is also present in
+// serve mode.
+func TestBuildServeArgs_DoodMode_GroupAdd(t *testing.T) {
+	stubDockerSocketGID(t, "975")
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildServeArgs(cfg, nil, "testimage", "sess1", "homevol", "", "", 4096)
+	if !containsPair(args, "--group-add", "975") {
+		t.Errorf("expected --group-add 975 in dood serve mode; got: %v", args)
+	}
+}
+
+// TestBuildDebugArgs_DoodMode_GroupAdd verifies --group-add is also present in
+// debug mode.
+func TestBuildDebugArgs_DoodMode_GroupAdd(t *testing.T) {
+	stubDockerSocketGID(t, "975")
+	cfg := &Config{
+		Tool:       fakeConfig(t, nil).Tool,
+		RepoPath:   t.TempDir(),
+		DockerMode: "dood",
+	}
+	args := buildDebugArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+	if !containsPair(args, "--group-add", "975") {
+		t.Errorf("expected --group-add 975 in dood debug mode; got: %v", args)
 	}
 }
 

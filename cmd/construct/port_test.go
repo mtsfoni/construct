@@ -18,14 +18,12 @@ func TestPortFlag_AppearsInUsage(t *testing.T) {
 }
 
 // TestPortFlag_MultipleAllowed verifies that the flag can be repeated without
-// the binary exiting with a parse error.
+// the binary exiting with a flag parse error.
 func TestPortFlag_MultipleAllowed(t *testing.T) {
 	home := t.TempDir()
-	// --stack is not required to be valid at parse time; we just want to confirm
-	// the flag parser accepts multiple --port values without a flag syntax error.
-	out, code := run(t, home, "", "--port", "3000", "--port", "8080")
-	// Will exit non-zero (no Docker), but must not be a flag parse error.
-	_ = code
+	// Use --help so the binary exits immediately after parsing flags, without
+	// attempting to connect to Docker (which would block in CI).
+	out, _ := run(t, home, "", "--port", "3000", "--port", "8080", "--help")
 	if strings.Contains(out, "flag provided but not defined") {
 		t.Errorf("multiple --port values caused a flag parse error: %s", out)
 	}

@@ -6,12 +6,14 @@
 package main_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 var binaryPath string
@@ -44,7 +46,12 @@ func run(t *testing.T, home, cwd string, args ...string) (stdout string, exitCod
 	if cwd == "" {
 		cwd = t.TempDir()
 	}
-	cmd := exec.Command(binaryPath, args...)
+	// Use a 30-second timeout so tests that accidentally invoke runner.Run
+	// (which blocks on Docker) fail fast rather than hanging until the suite
+	// hits its 10-minute deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	// Set both HOME and USERPROFILE so os.UserHomeDir() finds the right dir
 	// on both Linux/macOS (HOME) and Windows (USERPROFILE).
 	cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home)
@@ -52,6 +59,9 @@ func run(t *testing.T, home, cwd string, args ...string) (stdout string, exitCod
 	out, err := cmd.CombinedOutput()
 	stdout = string(out)
 	if err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("run %v timed out after 30s (binary did not exit; likely blocked on Docker)", args)
+		}
 		if ee, ok := err.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
 		} else {

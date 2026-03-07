@@ -65,4 +65,4 @@ The integration tests in `cmd/construct/config_test.go` compile the binary thems
 
 **No external Go dependencies** — `go.mod` declares no `require` directives. Everything is standard library + `os/exec` shelling out to `docker`.
 
-**SELinux hosts (Fedora, RHEL, etc.)** — all host bind mounts must carry the `:z` relabeling suffix so SELinux grants the container access. This applies to `/workspace`, `/run/secrets`, and the home volume seed dir. Named Docker volumes do not need `:z`. If a container silently fails to read a bind-mounted path, a missing `:z` is the first thing to check.
+**SELinux hosts (Fedora, RHEL, etc.)** — all host bind mounts must carry the `:z` relabeling suffix so SELinux grants the container access. This applies to `/workspace`, `/run/secrets`, and the home volume seed dir. Named Docker volumes do not need `:z`. Unix sockets (e.g. `/var/run/docker.sock` in DooD mode) **cannot** be relabeled with `:z` — use `--security-opt label=disable` on the container instead. If a container silently fails to read a bind-mounted path, a missing `:z` is the first thing to check; if it fails to access a socket, add `--security-opt label=disable`.

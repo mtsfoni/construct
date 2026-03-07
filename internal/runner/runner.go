@@ -284,10 +284,21 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
 	case "dood":
 		// Docker-outside-of-Docker: bind-mount the host socket.
+		// --security-opt label=disable disables SELinux confinement for this
+		// container so the process can access the socket regardless of its
+		// SELinux label (avoids permission denied on Fedora/RHEL hosts where
+		// :z relabeling alone is insufficient for sockets).
 		args = append(args,
+			"--security-opt", "label=disable",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
 			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
 		)
+		// Add the agent to the socket's group so it can reach the daemon
+		// without root. The host docker group GID often differs from the GID
+		// baked into the image, so we pass it explicitly via --group-add.
+		if gid := dockerSocketGID(); gid != "" {
+			args = append(args, "--group-add", gid)
+		}
 		// "none" (default): no DOCKER_HOST, no socket — agent has no Docker access.
 	}
 
@@ -407,9 +418,13 @@ func buildServeArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
 	case "dood":
 		args = append(args,
+			"--security-opt", "label=disable",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
 			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
 		)
+		if gid := dockerSocketGID(); gid != "" {
+			args = append(args, "--group-add", gid)
+		}
 	}
 
 	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
@@ -503,9 +518,13 @@ func buildDebugArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 		args = append(args, "-e", "DOCKER_HOST="+dindInst.DockerHost())
 	case "dood":
 		args = append(args,
+			"--security-opt", "label=disable",
 			"-v", "/var/run/docker.sock:/var/run/docker.sock",
 			"-e", "DOCKER_HOST=unix:///var/run/docker.sock",
 		)
+		if gid := dockerSocketGID(); gid != "" {
+			args = append(args, "--group-add", gid)
+		}
 	}
 
 	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
@@ -1135,6 +1154,20 @@ func generateSessionID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// dockerSocketGID is the function used to retrieve the GID of the host Docker
+// socket. It is a package-level variable so tests can inject a stub.
+var dockerSocketGID = func() string {
+	info, err := os.Stat("/var/run/docker.sock")
+	if err != nil {
+		return ""
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%d", st.Gid)
 }
 
 // writeSecretFiles writes each auth credential to its own 0600 temp file inside

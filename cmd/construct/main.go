@@ -73,7 +73,7 @@ func runAgent(args []string) {
 	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
 	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
 	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
-	dockerMode := fs.String("docker", "none", "Docker access mode: none (default, no Docker), dood (Docker-outside-of-Docker via host socket), dind (Docker-in-Docker sidecar)")
+	dockerMode := fs.String("docker", "none", "Docker access mode: none (default, no Docker), dood (host socket — grants root-equivalent host access; disables SELinux confinement), dind (isolated sidecar)")
 	servePort := fs.Int("serve-port", 0, "Port for the opencode HTTP server inside the container (default 4096)")
 	client := fs.String("client", "", "Local client to connect to the opencode server: tui (opencode attach), web (browser), or empty for auto-detect")
 	var ports portFlag
@@ -96,6 +96,9 @@ func runAgent(args []string) {
 		fmt.Fprintf(os.Stderr, "\nDocker modes:\n")
 		fmt.Fprintf(os.Stderr, "  none   No Docker access inside the agent container (default)\n")
 		fmt.Fprintf(os.Stderr, "  dood   Docker-outside-of-Docker: bind-mounts the host socket (/var/run/docker.sock)\n")
+		fmt.Fprintf(os.Stderr, "         Warning: grants the agent root-equivalent access to the host via the Docker daemon.\n")
+		fmt.Fprintf(os.Stderr, "         SELinux confinement is disabled (--security-opt label=disable) for socket access.\n")
+		fmt.Fprintf(os.Stderr, "         Use dind for stronger isolation.\n")
 		fmt.Fprintf(os.Stderr, "  dind   Docker-in-Docker: starts a privileged dind sidecar container\n")
 		fmt.Fprintf(os.Stderr, "\nClient modes (--client):\n")
 		fmt.Fprintf(os.Stderr, "  <empty>  Auto-detect: opencode attach if opencode on PATH, else browser (default)\n")

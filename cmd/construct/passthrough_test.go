@@ -4,9 +4,6 @@
 package main_test
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,8 +12,9 @@ import (
 // not cause a flag-parse error and are accepted by the binary.
 func TestPassthrough_DoubleDashSeparatesToolArgs(t *testing.T) {
 	home := t.TempDir()
-	// The binary will fail (no Docker), but must not exit with a flag-parse error.
-	out, _ := run(t, home, "", "--", "continue-session", "dead-beef-1234")
+	// Use --help so the binary exits immediately after parsing flags, without
+	// attempting to connect to Docker (which would block in CI).
+	out, _ := run(t, home, "", "--help", "--", "continue-session", "dead-beef-1234")
 	if strings.Contains(out, "flag provided but not defined") {
 		t.Errorf("-- caused a flag-parse error: %s", out)
 	}
@@ -26,7 +24,9 @@ func TestPassthrough_DoubleDashSeparatesToolArgs(t *testing.T) {
 // are still parsed correctly when pass-through args follow.
 func TestPassthrough_FlagsBeforeDoubleDash(t *testing.T) {
 	home := t.TempDir()
-	out, _ := run(t, home, "", "--stack", "base", "--", "continue-session", "abc")
+	// Use --help so the binary exits immediately after flag parsing, without
+	// attempting to connect to Docker (which would block in CI).
+	out, _ := run(t, home, "", "--stack", "base", "--help", "--", "continue-session", "abc")
 	if strings.Contains(out, "flag provided but not defined") {
 		t.Errorf("flags before -- caused a parse error: %s", out)
 	}
@@ -49,22 +49,10 @@ func TestPassthrough_QsDoubleDash(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()
 
-	// Write a last-used entry so qs doesn't fail on "no previous run".
-	lastUsedDir := filepath.Join(home, ".construct")
-	if err := os.MkdirAll(lastUsedDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	entry := map[string]interface{}{
-		repo: map[string]interface{}{"stack": "base", "docker": "none"},
-	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(lastUsedDir, "last-used.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	// Use a repo with no last-used entry. qs will exit non-zero ("no previous
+	// run recorded") before reaching runner.Run, so the test completes quickly
+	// without attempting to connect to Docker. We only care that -- does not
+	// produce a flag-parse error.
 	out, _ := run(t, home, repo, "qs", repo, "--", "continue-session", "dead-beef-1234")
 	if strings.Contains(out, "flag provided but not defined") {
 		t.Errorf("qs -- caused a flag-parse error: %s", out)
