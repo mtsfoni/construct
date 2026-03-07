@@ -4,7 +4,7 @@
 
 ---
 
-## [v0.7.1] — 2026-03-07
+## [v0.7.2] — 2026-03-07
 
 ### Added
 - **Serve mode** — `construct run` now starts `opencode serve` headlessly inside the container (`docker run -d`) and connects a local client from the host. The local client is `opencode attach <url>` when `opencode` is on `$PATH`, or the system default browser as a fallback. This eliminates TUI-in-container rendering issues and lets users interact through their own local opencode setup.
