@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Session history now scoped per project** — previously, opencode's session database (`opencode.db`) was stored inside a global Docker volume (`construct-auth-opencode`) that was shared across all repos. This meant the session list showed sessions from every project regardless of which repo `construct` was launched for. The fix replaces the directory volume mount with a file bind-mount of only `auth.json` (from `~/.construct/opencode/auth.json` on the host). The session database now lives in the per-repo home volume and is isolated to the current project. OAuth tokens in `auth.json` remain global (shared across repos, survive `--reset`) so users still only need to authenticate once. Note: `opencode.db` is now wiped by `--reset` along with the rest of the home volume.
+- **opencode health check timeout after auth.json bind-mount** — when Docker bind-mounts a file into a container, it auto-creates any missing parent directories as root. After switching to the `auth.json` file bind-mount, `/home/agent/.local/`, `.local/share/`, and `.local/share/opencode/` were created root-owned, so opencode could not write its `bin/` directory or `.local/state/` siblings and crashed immediately. The fix pre-creates the parent directory (`/home/agent/.local/share/opencode/`) in the tool image Dockerfile as the `agent` user — Docker's bind-mount then finds the directory already present and does not recreate it. Requires a one-time `--rebuild` to pick up the updated image.
+- **Health-check timeout now shows container logs and recovery hints** — previously, when the opencode server failed to start in serve mode, the only output was `server did not become ready: timed out after 15s waiting for …`, with no indication of why it failed or what to do. On timeout, `construct` now retrieves and prints the container's stderr/stdout (which almost always names the root cause directly, e.g. an `EACCES` error or a missing API key), followed by actionable recovery hints: try `--rebuild` if opencode just updated, `--reset` if the home volume is corrupt or stale, or `--debug` to inspect the container interactively.
+
 ---
 
 ## [v0.7.2] — 2026-03-07

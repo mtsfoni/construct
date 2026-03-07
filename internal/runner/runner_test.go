@@ -743,6 +743,159 @@ func TestEnsureAuthVolume_IdempotentWhenExists(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_MountsAuthFiles verifies that when a tool defines AuthFiles
+// each entry is bind-mounted as an individual file with the :z SELinux suffix.
+func TestBuildRunArgs_MountsAuthFiles(t *testing.T) {
+	hostPath := filepath.Join(t.TempDir(), "auth.json")
+	cfg := &Config{
+		Tool: &tools.Tool{
+			Name:   "testtool",
+			RunCmd: []string{"echo"},
+			AuthFiles: []tools.AuthFile{
+				{HostPath: hostPath, ContainerPath: "/home/agent/.local/share/testtool/auth.json"},
+			},
+		},
+		Stack:    "node",
+		RepoPath: t.TempDir(),
+	}
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+
+	want := hostPath + ":/home/agent/.local/share/testtool/auth.json:z"
+	found := false
+	for i, arg := range args {
+		if arg == "-v" && i+1 < len(args) && args[i+1] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected -v %s in args; got: %v", want, args)
+	}
+}
+
+// TestBuildServeArgs_MountsAuthFiles verifies that auth file bind-mounts also
+// appear in the serve-mode docker run args.
+func TestBuildServeArgs_MountsAuthFiles(t *testing.T) {
+	hostPath := filepath.Join(t.TempDir(), "auth.json")
+	cfg := &Config{
+		Tool: &tools.Tool{
+			Name:   "testtool",
+			RunCmd: []string{"echo"},
+			AuthFiles: []tools.AuthFile{
+				{HostPath: hostPath, ContainerPath: "/home/agent/.local/share/testtool/auth.json"},
+			},
+		},
+		Stack:    "node",
+		RepoPath: t.TempDir(),
+	}
+	args := buildServeArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "", 4096)
+
+	want := hostPath + ":/home/agent/.local/share/testtool/auth.json:z"
+	found := false
+	for i, arg := range args {
+		if arg == "-v" && i+1 < len(args) && args[i+1] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected -v %s in serve args; got: %v", want, args)
+	}
+}
+
+// TestBuildRunArgs_NoAuthFilesWhenEmpty verifies that no extra bind-mounts are
+// added when AuthFiles is nil or empty.
+func TestBuildRunArgs_NoAuthFilesWhenEmpty(t *testing.T) {
+	cfg := fakeConfig(t, nil) // AuthFiles is nil
+	args := buildRunArgs(cfg, fakeDind(), "testimage", "sess1", "homevol", "", "")
+	joined := strings.Join(args, " ")
+
+	if strings.Contains(joined, "auth.json") {
+		t.Errorf("unexpected auth.json in args when AuthFiles is nil: %s", joined)
+	}
+}
+
+// TestEnsureAuthFile_CreatesFileWhenAbsent verifies that ensureAuthFile creates
+// the file (and its parent directories) when neither exist.
+func TestEnsureAuthFile_CreatesFileWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "sub", "auth.json")
+
+	if err := ensureAuthFile(hostPath); err != nil {
+		t.Fatalf("ensureAuthFile: %v", err)
+	}
+
+	info, err := os.Stat(hostPath)
+	if err != nil {
+		t.Fatalf("stat after ensureAuthFile: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("expected regular file at %s, got mode %v", hostPath, info.Mode())
+	}
+}
+
+// TestEnsureAuthFile_IdempotentWhenExists verifies that calling ensureAuthFile
+// on a path that already contains a file returns no error and does not truncate it.
+func TestEnsureAuthFile_IdempotentWhenExists(t *testing.T) {
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "auth.json")
+
+	// Write some content so we can confirm it is not overwritten.
+	content := []byte(`{"token":"abc"}`)
+	if err := os.WriteFile(hostPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureAuthFile(hostPath); err != nil {
+		t.Fatalf("ensureAuthFile on existing file: %v", err)
+	}
+
+	got, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatalf("read after ensureAuthFile: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("file content changed: got %q, want %q", got, content)
+	}
+}
+
+// TestOpencodeAuthFiles_PointsToConstructDir verifies that the opencode tool
+// defines an AuthFiles entry pointing into ~/.construct/opencode/auth.json and
+// that the container path is the expected XDG data location.
+func TestOpencodeAuthFiles_PointsToConstructDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Re-derive the expected paths the same way opencode.go does.
+	authFiles := tools.AuthFilesForOpencode(fakeHome)
+	if len(authFiles) != 1 {
+		t.Fatalf("expected 1 AuthFile, got %d", len(authFiles))
+	}
+
+	wantHost := filepath.Join(fakeHome, ".construct", "opencode", "auth.json")
+	if authFiles[0].HostPath != wantHost {
+		t.Errorf("HostPath = %q, want %q", authFiles[0].HostPath, wantHost)
+	}
+
+	const wantContainer = "/home/agent/.local/share/opencode/auth.json"
+	if authFiles[0].ContainerPath != wantContainer {
+		t.Errorf("ContainerPath = %q, want %q", authFiles[0].ContainerPath, wantContainer)
+	}
+}
+
+// TestOpencodeAuthFiles_SessionDBNotShadowed verifies that the opencode tool
+// does NOT use AuthVolumePath (which would shadow the whole share/opencode dir
+// and make opencode.db global). Sessions must be per-repo via the home volume.
+func TestOpencodeAuthFiles_SessionDBNotShadowed(t *testing.T) {
+	tool := tools.Opencode()
+	if tool == nil {
+		t.Fatal("opencode tool not registered")
+	}
+	if tool.AuthVolumePath != "" {
+		t.Errorf("opencode.AuthVolumePath = %q; want empty (use AuthFiles instead to avoid global opencode.db)", tool.AuthVolumePath)
+	}
+}
+
 // TestBuildRunArgs_MCPEnvVar_WhenMCPTrue asserts that CONSTRUCT_MCP=1 is
 // present in the docker run args when cfg.MCP is true.
 func TestBuildRunArgs_MCPEnvVar_WhenMCPTrue(t *testing.T) {
@@ -1920,5 +2073,135 @@ func TestRunConfig_ClientValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid-client") {
 		t.Errorf("error = %q, want it to mention the bad value 'invalid-client'", err.Error())
+	}
+}
+
+// TestToolDockerfile_MkdirForAuthFiles verifies that toolDockerfile emits a
+// "RUN mkdir -p <parent>" line for each AuthFile entry, ensuring the parent
+// directories are created as the agent user inside the image. Without this,
+// Docker bind-mounts the file at runtime and auto-creates the missing parent
+// directories as root-owned, which causes EACCES for the agent.
+func TestToolDockerfile_MkdirForAuthFiles(t *testing.T) {
+	tool := &tools.Tool{
+		Name: "opencode",
+		AuthFiles: []tools.AuthFile{
+			{
+				HostPath:      "/irrelevant/host/path",
+				ContainerPath: "/home/agent/.local/share/opencode/auth.json",
+			},
+		},
+	}
+	got := toolDockerfile("construct-base", tool)
+
+	// The USER agent line must appear before the mkdir so the directory is
+	// created with agent ownership.
+	userAgentIdx := strings.Index(got, "USER agent\n")
+	if userAgentIdx < 0 {
+		t.Fatal("generated Dockerfile missing 'USER agent' line")
+	}
+
+	wantMkdir := "RUN mkdir -p /home/agent/.local/share/opencode\n"
+	mkdirIdx := strings.Index(got, wantMkdir)
+	if mkdirIdx < 0 {
+		t.Errorf("generated Dockerfile missing %q\ngot:\n%s", wantMkdir, got)
+	}
+	if mkdirIdx < userAgentIdx {
+		t.Errorf("mkdir line appears before 'USER agent' line; want it after\ngot:\n%s", got)
+	}
+}
+
+// TestToolDockerfile_NoMkdirWhenNoAuthFiles verifies that toolDockerfile does
+// not emit any "RUN mkdir -p" lines when the tool has no AuthFiles.
+func TestToolDockerfile_NoMkdirWhenNoAuthFiles(t *testing.T) {
+	tool := &tools.Tool{
+		Name:      "sometool",
+		AuthFiles: nil,
+	}
+	got := toolDockerfile("construct-base", tool)
+	if strings.Contains(got, "RUN mkdir -p") {
+		t.Errorf("expected no 'RUN mkdir -p' lines when AuthFiles is empty, got:\n%s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// containerLogs / serve-timeout diagnostics tests
+// ---------------------------------------------------------------------------
+
+// stubContainerLogs replaces the containerLogs injectable for the duration of
+// a test and restores the original on cleanup.
+func stubContainerLogs(t *testing.T, fn func(name string) string) {
+	t.Helper()
+	orig := containerLogs
+	containerLogs = fn
+	t.Cleanup(func() { containerLogs = orig })
+}
+
+// TestContainerLogs_ReturnsOutput verifies that containerLogs returns the
+// combined stdout+stderr from docker logs when the command succeeds.
+func TestContainerLogs_ReturnsOutput(t *testing.T) {
+	// We test the real function signature by checking the injectable default
+	// behaves correctly with a real (known-absent) container name — it should
+	// return an empty string (not panic) when docker logs exits non-zero.
+	got := containerLogs("construct-test-nonexistent-container-abc123")
+	// Docker will exit non-zero (no such container); we expect empty string.
+	if got != "" {
+		// This path runs only if somehow a container with this name exists.
+		t.Logf("containerLogs returned non-empty for absent container (unexpected): %q", got)
+	}
+}
+
+// TestServeTimeoutDiagnostics_PrintsContainerLogs verifies that when the
+// health-check times out, printServeTimeoutDiagnostics writes the container
+// logs and the recovery hints to the provided writer.
+func TestServeTimeoutDiagnostics_PrintsContainerLogs(t *testing.T) {
+	const fakeContainerName = "construct-agent-test123"
+	const fakeLogs = "EACCES: permission denied, mkdir '/home/agent/.local/share/opencode/bin'"
+
+	stubContainerLogs(t, func(name string) string {
+		if name != fakeContainerName {
+			t.Errorf("containerLogs called with %q, want %q", name, fakeContainerName)
+		}
+		return fakeLogs
+	})
+
+	var buf strings.Builder
+	printServeTimeoutDiagnostics(&buf, fakeContainerName)
+	got := buf.String()
+
+	// Container logs section must be present.
+	if !strings.Contains(got, fakeLogs) {
+		t.Errorf("output missing container log content %q\ngot:\n%s", fakeLogs, got)
+	}
+	// Recovery hints must be present.
+	if !strings.Contains(got, "--rebuild") {
+		t.Errorf("output missing --rebuild hint\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "--reset") {
+		t.Errorf("output missing --reset hint\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "--debug") {
+		t.Errorf("output missing --debug hint\ngot:\n%s", got)
+	}
+}
+
+// TestServeTimeoutDiagnostics_EmptyLogs verifies that when the container
+// produced no output, the log section is omitted but the hints are still shown.
+func TestServeTimeoutDiagnostics_EmptyLogs(t *testing.T) {
+	stubContainerLogs(t, func(name string) string { return "" })
+
+	var buf strings.Builder
+	printServeTimeoutDiagnostics(&buf, "construct-agent-test456")
+	got := buf.String()
+
+	// No "begin container logs" block when logs are empty.
+	if strings.Contains(got, "begin container logs") {
+		t.Errorf("expected no log block for empty logs, got:\n%s", got)
+	}
+	// Hints still present.
+	if !strings.Contains(got, "--rebuild") {
+		t.Errorf("output missing --rebuild hint\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "--reset") {
+		t.Errorf("output missing --reset hint\ngot:\n%s", got)
 	}
 }

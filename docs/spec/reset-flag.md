@@ -20,13 +20,23 @@ The rest of the run proceeds normally — images are not rebuilt unless `--rebui
 
 ### Warning
 
-`--reset` permanently deletes all agent state for the (repo, tool) pair, including:
+`--reset` permanently deletes all agent state stored in the home volume for the
+(repo, tool) pair, including:
 
 - Shell history and tool caches
-- Auth tokens stored by the tool (e.g. `gh auth login` tokens, API keys written by the agent)
+- Session history (`opencode.db`)
 - Any runtime modifications the agent made to its config
 
-Users who need to preserve this data should back up the volume first (`docker run --rm -v <vol>:/src ubuntu tar cz /src > backup.tar.gz`).
+**`--reset` does NOT delete:**
+
+- OAuth tokens — `auth.json` is persisted as a host-side file bind-mount
+  (`~/.construct/opencode/auth.json`) outside the home volume and is unaffected
+  by `--reset`. The user does not need to re-authenticate after a reset.
+- API keys and credentials stored in `.construct/.env` files.
+- Last-used launch settings in `~/.construct/last-used.json`.
+
+Users who need to preserve home volume data should back up the volume first
+(`docker run --rm -v <vol>:/src ubuntu tar cz /src > backup.tar.gz`).
 
 ## Persistence details
 

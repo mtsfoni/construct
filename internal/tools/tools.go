@@ -6,6 +6,18 @@ import (
 	"strings"
 )
 
+// AuthFile describes a single host file that should be bind-mounted into the
+// container at a fixed path, typically used to persist a tool's auth tokens
+// (e.g. opencode's auth.json) across repos and --reset without mounting a
+// whole directory from a named volume.
+type AuthFile struct {
+	// HostPath is the absolute path on the host (e.g. "~/.construct/opencode/auth.json").
+	// Tilde expansion is NOT performed here; callers must expand it before use.
+	HostPath string
+	// ContainerPath is the absolute path inside the container where the file is mounted.
+	ContainerPath string
+}
+
 // Tool defines how an AI coding tool is installed, configured, and invoked inside the agent container.
 type Tool struct {
 	// Name is the tool identifier used in image names and volume names (e.g. "opencode").
@@ -26,6 +38,12 @@ type Tool struct {
 	// When non-empty, a global named Docker volume is mounted at this path so that
 	// auth state is shared across all repos and survives --reset.
 	AuthVolumePath string
+	// AuthFiles is a list of individual host files to bind-mount into the container
+	// for persisting auth state globally without mounting an entire directory via a
+	// named volume. This allows the session database (opencode.db) to remain in the
+	// per-repo home volume while only the auth token file is shared globally.
+	// The runner calls ensureAuthFile for each entry to create the host file if absent.
+	AuthFiles []AuthFile
 }
 
 var registry = map[string]*Tool{}

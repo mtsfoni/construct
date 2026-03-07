@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -137,6 +138,15 @@ func Run(cfg *Config) error {
 		}
 	}
 
+	// 4c. Ensure host-side auth files exist for bind-mounting. Each file is
+	// created (empty, mode 0600) if absent so Docker bind-mounts a regular file
+	// rather than creating a directory at that path.
+	for _, af := range cfg.Tool.AuthFiles {
+		if err := ensureAuthFile(af.HostPath); err != nil {
+			return fmt.Errorf("ensure auth file %s: %w", af.HostPath, err)
+		}
+	}
+
 	// 5. Load environment variables (global then per-repo override).
 	env, err := loadEnv(cfg.RepoPath)
 	if err != nil {
@@ -219,6 +229,7 @@ func Run(cfg *Config) error {
 	// 10. Wait for the opencode HTTP server to accept connections.
 	serverURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if err := waitForServer(serverURL, 15*time.Second); err != nil {
+		printServeTimeoutDiagnostics(os.Stderr, containerName)
 		stopContainer(containerName)
 		return fmt.Errorf("server did not become ready: %w", err)
 	}
@@ -328,6 +339,14 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 	// NOT wiped by --reset so OAuth tokens survive across resets and repos.
 	if authVolume != "" && cfg.Tool.AuthVolumePath != "" {
 		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
+	}
+
+	// Bind-mount individual auth files (e.g. auth.json) from the host into the
+	// container. Each file is created on the host by ensureAuthFile before the
+	// container starts. Using :z applies the SELinux relabel suffix required on
+	// Fedora/RHEL hosts.
+	for _, af := range cfg.Tool.AuthFiles {
+		args = append(args, "-v", af.HostPath+":"+af.ContainerPath+":z")
 	}
 
 	// Mount the secrets directory read-only at /run/secrets; the entrypoint
@@ -447,6 +466,11 @@ func buildServeArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
 	}
 
+	// Bind-mount individual auth files (e.g. auth.json) from the host.
+	for _, af := range cfg.Tool.AuthFiles {
+		args = append(args, "-v", af.HostPath+":"+af.ContainerPath+":z")
+	}
+
 	if secretsDir != "" {
 		args = append(args, "-v", secretsDir+":/run/secrets:ro,z")
 	}
@@ -547,6 +571,11 @@ func buildDebugArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 		args = append(args, "-v", authVolume+":"+cfg.Tool.AuthVolumePath)
 	}
 
+	// Bind-mount individual auth files (e.g. auth.json) from the host.
+	for _, af := range cfg.Tool.AuthFiles {
+		args = append(args, "-v", af.HostPath+":"+af.ContainerPath+":z")
+	}
+
 	if secretsDir != "" {
 		args = append(args, "-v", secretsDir+":/run/secrets:ro,z")
 	}
@@ -608,6 +637,35 @@ func waitForServer(serverURL string, timeout time.Duration) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out after %s waiting for %s", timeout, healthURL)
+}
+
+// containerLogs is an injectable function that returns the combined stdout+stderr
+// of the named container via "docker logs". Returns an empty string if the
+// command fails (e.g. container already removed).
+var containerLogs = func(name string) string {
+	out, err := exec.Command("docker", "logs", name).CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// printServeTimeoutDiagnostics writes container log output (if any) and
+// recovery hints to w. It is called when the health-check times out so the
+// user has actionable context instead of a bare timeout message.
+func printServeTimeoutDiagnostics(w io.Writer, containerName string) {
+	if logs := containerLogs(containerName); logs != "" {
+		fmt.Fprintf(w, "\nconstruct: server did not become ready — container logs:\n")
+		fmt.Fprintf(w, "--- begin container logs ---\n")
+		fmt.Fprint(w, logs)
+		if !strings.HasSuffix(logs, "\n") {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "--- end container logs ---\n")
+	}
+	fmt.Fprintf(w, "\nconstruct: hint: if opencode just updated, try:                construct --rebuild\n")
+	fmt.Fprintf(w, "construct: hint: if the home volume is corrupt or stale, try: construct --reset\n")
+	fmt.Fprintf(w, "construct: hint: to inspect the container interactively, try: construct --debug\n")
 }
 
 // runLocalAttach connects a local client to the opencode server according to
@@ -686,15 +744,10 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
-// buildToolImage creates a derived Docker image that installs the tool on top of the stack image.
-func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
-	dir, err := os.MkdirTemp("", "construct-tool-build-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-
-	// Build a minimal Dockerfile that installs the tool and adds the entrypoint wrapper.
+// toolDockerfile generates the Dockerfile content for a tool image derived from
+// stackImage. It is a separate function so tests can assert on the generated
+// content without building a real Docker image.
+func toolDockerfile(stackImage string, tool *tools.Tool) string {
 	var sb strings.Builder
 	sb.WriteString("FROM " + stackImage + "\n")
 	sb.WriteString("USER root\n")
@@ -704,9 +757,29 @@ func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
 	sb.WriteString("COPY construct-entrypoint.sh /usr/local/bin/construct-entrypoint\n")
 	sb.WriteString("RUN chmod +x /usr/local/bin/construct-entrypoint\n")
 	sb.WriteString("USER agent\n")
+	// Pre-create parent directories for any auth file bind-mounts so that Docker
+	// does not create them as root-owned when mounting the file at runtime.
+	// These dirs are created as the agent user so they have correct ownership
+	// regardless of the home volume state.
+	for _, af := range tool.AuthFiles {
+		parentDir := filepath.Dir(af.ContainerPath)
+		if parentDir != "" && parentDir != "." && parentDir != "/" {
+			sb.WriteString("RUN mkdir -p " + parentDir + "\n")
+		}
+	}
 	sb.WriteString("ENTRYPOINT [\"/usr/local/bin/construct-entrypoint\"]\n")
+	return sb.String()
+}
 
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(sb.String()), 0o644); err != nil {
+// buildToolImage creates a derived Docker image that installs the tool on top of the stack image.
+func buildToolImage(toolImage, stackImage string, tool *tools.Tool) error {
+	dir, err := os.MkdirTemp("", "construct-tool-build-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(toolDockerfile(stackImage, tool)), 0o644); err != nil {
 		return err
 	}
 
@@ -1049,6 +1122,27 @@ func ensureAuthVolume(volumeName string) error {
 	).CombinedOutput(); err != nil {
 		return fmt.Errorf("init auth volume: %w\n%s", err, string(out))
 	}
+	return nil
+}
+
+// ensureAuthFile creates the host-side file at hostPath if it does not already
+// exist, including any parent directories. This ensures the file exists as a
+// regular file before Docker bind-mounts it — Docker would create a directory
+// at that path if the file were absent, breaking the mount.
+// The file is created empty (0600) so the tool can write into it on first use.
+func ensureAuthFile(hostPath string) error {
+	dir := filepath.Dir(hostPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create auth file dir %s: %w", dir, err)
+	}
+	f, err := os.OpenFile(hostPath, os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil // already exists, nothing to do
+		}
+		return fmt.Errorf("create auth file %s: %w", hostPath, err)
+	}
+	f.Close()
 	return nil
 }
 
