@@ -1156,20 +1156,6 @@ func generateSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// dockerSocketGID is the function used to retrieve the GID of the host Docker
-// socket. It is a package-level variable so tests can inject a stub.
-var dockerSocketGID = func() string {
-	info, err := os.Stat("/var/run/docker.sock")
-	if err != nil {
-		return ""
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return ""
-	}
-	return fmt.Sprintf("%d", st.Gid)
-}
-
 // writeSecretFiles writes each auth credential to its own 0600 temp file inside
 // a newly created temp directory. The caller is responsible for removing the
 // directory (os.RemoveAll) when the container exits.
