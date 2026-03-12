@@ -1735,6 +1735,114 @@ func TestServePort_CustomPort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// isPortFree / findFreePort tests
+// ---------------------------------------------------------------------------
+
+// TestIsPortFree_FreePort verifies that isPortFree returns true for a port
+// that nothing is bound to.
+func TestIsPortFree_FreePort(t *testing.T) {
+	// Grab an ephemeral port from the OS, then close the listener before
+	// calling isPortFree so the port is genuinely free.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	if !isPortFree(port) {
+		t.Errorf("isPortFree(%d) = false, want true for an unbound port", port)
+	}
+}
+
+// TestIsPortFree_BusyPort verifies that isPortFree returns false when
+// a listener is already bound to the port.
+func TestIsPortFree_BusyPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	if isPortFree(port) {
+		t.Errorf("isPortFree(%d) = true, want false while a listener holds the port", port)
+	}
+}
+
+// TestFindFreePort_ReturnsStartWhenFree verifies that findFreePort returns the
+// start port itself when that port is not in use.
+func TestFindFreePort_ReturnsStartWhenFree(t *testing.T) {
+	// Use an ephemeral port that the OS just freed.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	got := findFreePort(port)
+	if got != port {
+		t.Errorf("findFreePort(%d) = %d, want %d when port is free", port, got, port)
+	}
+}
+
+// TestFindFreePort_SkipsBusyPort verifies that findFreePort skips over a busy
+// port and returns the next free one.
+func TestFindFreePort_SkipsBusyPort(t *testing.T) {
+	// Bind a listener on the first port so it is unavailable.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	busyPort := ln.Addr().(*net.TCPAddr).Port
+
+	got := findFreePort(busyPort)
+	if got == 0 {
+		t.Fatalf("findFreePort(%d) = 0; expected a free port to be found", busyPort)
+	}
+	if got <= busyPort {
+		t.Errorf("findFreePort(%d) = %d; want a port > %d (busy port skipped)", busyPort, got, busyPort)
+	}
+	// The returned port must actually be free.
+	if !isPortFree(got) {
+		t.Errorf("findFreePort returned port %d, but isPortFree(%d) = false", got, got)
+	}
+}
+
+// TestFindFreePort_ReturnsZeroWhenRangeExhausted verifies that findFreePort
+// returns 0 when all ports in the search range are occupied.
+func TestFindFreePort_ReturnsZeroWhenRangeExhausted(t *testing.T) {
+	// Bind listeners on 100 consecutive ports starting at startPort.
+	// We use high ephemeral ports to avoid system conflicts.
+	const startPort = 59900
+	const count = 100
+	listeners := make([]net.Listener, 0, count)
+	for i := 0; i < count; i++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", startPort+i))
+		if err != nil {
+			// If we can't bind all 100 ports (e.g. some already taken), skip the test.
+			for _, l := range listeners {
+				l.Close()
+			}
+			t.Skipf("could not bind port %d: %v", startPort+i, err)
+		}
+		listeners = append(listeners, ln)
+	}
+	defer func() {
+		for _, l := range listeners {
+			l.Close()
+		}
+	}()
+
+	got := findFreePort(startPort)
+	if got != 0 {
+		t.Errorf("findFreePort(%d) = %d, want 0 when all ports in range are busy", startPort, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // buildServeArgs tests
 // ---------------------------------------------------------------------------
 

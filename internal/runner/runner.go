@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -72,6 +73,29 @@ type Config struct {
 
 // defaultServePort is the port used by opencode serve when Config.ServePort is zero.
 const defaultServePort = 4096
+
+// isPortFree reports whether the given TCP port is free on the loopback interface.
+func isPortFree(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
+// findFreePort returns the first free TCP port in [start, start+maxPortSearch)
+// by probing the loopback interface. It returns 0 if no free port is found
+// within the search range.
+func findFreePort(start int) int {
+	const maxPortSearch = 100
+	for p := start; p < start+maxPortSearch && p <= 65535; p++ {
+		if isPortFree(p) {
+			return p
+		}
+	}
+	return 0
+}
 
 // servePort returns the effective serve port for the given config.
 func servePort(cfg *Config) int {
@@ -216,6 +240,19 @@ func Run(cfg *Config) error {
 	// 9. Normal mode: start the opencode server detached inside the container,
 	//    wait for it to be ready, then connect a local client.
 	port := servePort(cfg)
+	// When the user has not specified a port explicitly, auto-select the next
+	// free port if the default is already in use on the host.
+	if cfg.ServePort == 0 {
+		free := findFreePort(defaultServePort)
+		if free == 0 {
+			return fmt.Errorf("no free port found in range %d-%d; use --serve-port to specify a port explicitly", defaultServePort, defaultServePort+99)
+		}
+		if free != defaultServePort {
+			// ANSI yellow on stderr — visible but not alarming.
+			fmt.Fprintf(os.Stderr, "\033[33mconstruct: port %d is already in use; using port %d instead\033[0m\n", defaultServePort, free)
+			port = free
+		}
+	}
 	fmt.Printf("construct: launching %s serve in %s container (port %d)…\n", cfg.Tool.Name, cfg.Stack, port)
 
 	serverArgs := buildServeArgs(cfg, dindInst, toolImage, sessionID, homVol, authVol, secretsDir, port)
