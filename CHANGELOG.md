@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [v0.9.0] — 2026-03-12
+
 ### Added
 - **Auto-port fallback for serve mode** — when `--serve-port` is not specified and the default port (4096) is already in use on the host, `construct` now automatically picks the next free higher port instead of failing. A yellow diagnostic is printed to stderr: `construct: port 4096 is already in use; using port 4097 instead`. If `--serve-port` is specified explicitly, no fallback occurs.
 
