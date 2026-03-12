@@ -68,6 +68,20 @@ The `--port` flag is unchanged — it continues to publish application ports (e.
 
 `--serve-port` is saved to `~/.construct/last-used.json` and replayed by `construct qs`.
 
+## Auto-port fallback (no `--serve-port` given)
+
+When `--serve-port` is **not** specified and the default port (4096) is already
+bound on the host, `construct` automatically picks the next free higher port and
+prints a yellow diagnostic to stderr:
+
+```
+construct: port 4096 is already in use; using port 4097 instead
+```
+
+The fallback port is chosen by probing `127.0.0.1:<port>` sequentially from
+4096 upward until a free one is found. If `--serve-port` **is** specified
+explicitly, no fallback occurs — the user-supplied port is used as-is.
+
 ## Local client selection (`--client`)
 
 The `--client` flag controls how the host connects to the opencode server once it is ready:
@@ -121,7 +135,7 @@ The opencode server is bound to `0.0.0.0` inside the container so the host can r
 |---|---|
 | `docs/spec/serve-mode.md` | This spec |
 | `internal/config/lastused.go` | Add `ServePort int` and `Client string` to `LastUsed` |
-| `internal/runner/runner.go` | `Config.ServePort`; `Config.Client`; detached container start; `waitForServer`, `runLocalAttach(url, client)`, `runLocalHeadless` helpers; debug mode unchanged |
+| `internal/runner/runner.go` | `Config.ServePort`; `Config.Client`; detached container start; `waitForServer`, `runLocalAttach(url, client)`, `runLocalHeadless` helpers; debug mode unchanged; `isPortFree`/`findFreePort` for auto-port fallback |
 | `cmd/construct/main.go` | `--serve-port` and `--client` flags, pass to `runner.Config`, save to last-used |
-| `internal/runner/runner_test.go` | Tests for `buildServeArgs`, health-poll timeout behaviour, `runLocalAttach` client modes |
+| `internal/runner/runner_test.go` | Tests for `buildServeArgs`, health-poll timeout behaviour, `runLocalAttach` client modes, `isPortFree`/`findFreePort` |
 | `CHANGELOG.md` | Entry under `[Unreleased]` |
