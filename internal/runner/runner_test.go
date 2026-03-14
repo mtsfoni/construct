@@ -1018,7 +1018,7 @@ func TestGeneratedEntrypoint_ContainsConstructAgentsBlock(t *testing.T) {
 		{"instructs agent to bind to 0.0.0.0", "0.0.0.0"},
 		{"mentions CONSTRUCT_PORTS", "CONSTRUCT_PORTS"},
 		{"conditionally appends port rules when CONSTRUCT_PORTS set", "if [ -n \"${CONSTRUCT_PORTS}\" ]"},
-		{"mentions /workspace as shared directory", "/workspace"},
+		{"mentions CONSTRUCT_WORKSPACE_PATH in shared directory description", "CONSTRUCT_WORKSPACE_PATH"},
 		{"explains workspace is bind-mounted from user machine", "bind-mounted"},
 		{"describes container isolation", "isolated"},
 		{"mentions home dir persistence", "/home/agent"},
@@ -1066,12 +1066,11 @@ func TestGeneratedEntrypoint_AgentsMD_WorkspaceAndIsolationContent(t *testing.T)
 		snippet string
 	}{
 		{"workspace section header", "## Workspace"},
-		{"mentions /workspace path", "`/workspace`"},
+		{"uses CONSTRUCT_WORKSPACE_PATH env var for path", "${CONSTRUCT_WORKSPACE_PATH}"},
 		{"explains workspace is bind-mounted", "bind-mounted from their machine"},
-		{"notes workspace is the only shared directory", "only directory shared with the user"},
 		{"isolation section header", "## Isolation"},
 		{"explains container isolation", "isolated inside the container"},
-		{"mentions home dir path", "`/home/agent`"},
+		{"mentions home dir path", "\\`/home/agent\\`"},
 		{"explains home dir persistence", "persists across sessions"},
 		{"notes user machine is separate", "user's machine is separate"},
 	}
@@ -1082,21 +1081,224 @@ func TestGeneratedEntrypoint_AgentsMD_WorkspaceAndIsolationContent(t *testing.T)
 	}
 }
 
-// TestGeneratedEntrypoint_AgentsMD_HeredocIsQuoted verifies that the heredoc
-// that writes the static workspace/isolation content of AGENTS.md uses a
-// quoted delimiter (<< 'AGENTSEOF'). An unquoted delimiter causes the shell to
-// perform command substitution on backtick-wrapped paths like `/workspace` and
-// `/home/agent`, which results in "Permission denied" errors on startup.
-func TestGeneratedEntrypoint_AgentsMD_HeredocIsQuoted(t *testing.T) {
+// TestGeneratedEntrypoint_AgentsMD_HeredocAllowsExpansion verifies that the
+// first AGENTS.md heredoc uses an unquoted delimiter so that
+// ${CONSTRUCT_WORKSPACE_PATH} is expanded by the shell at container start, and
+// that any markdown backtick-wrapped paths are escaped to prevent accidental
+// command substitution.
+func TestGeneratedEntrypoint_AgentsMD_HeredocAllowsExpansion(t *testing.T) {
 	script := generatedEntrypoint()
-	// The first AGENTS.md heredoc must use a quoted delimiter to suppress
-	// backtick expansion. The line must contain << 'AGENTSEOF', not << AGENTSEOF.
-	if !strings.Contains(script, "<< 'AGENTSEOF'") {
-		t.Error("entrypoint: AGENTS.md initial heredoc must use a quoted delimiter (<< 'AGENTSEOF') to prevent backtick command substitution on paths like `/workspace` and `/home/agent`")
+	// The heredoc must NOT be quoted so ${CONSTRUCT_WORKSPACE_PATH} expands.
+	if strings.Contains(script, "<< 'AGENTSEOF'") {
+		t.Error("entrypoint: AGENTS.md initial heredoc must not use a quoted delimiter; ${CONSTRUCT_WORKSPACE_PATH} must expand at runtime")
+	}
+	// Backtick-wrapped paths must be escaped (\`) to prevent command substitution.
+	if strings.Contains(script, "`/home/agent`") {
+		t.Error("entrypoint: `/home/agent` must be written as \\`/home/agent\\` in the unquoted heredoc to prevent command substitution")
 	}
 }
 
-// TestEntrypointScript_WritesAgentsMD_WithPortSection verifies that when
+// TestContainerWorkdir_MirrorsPathOnUnix verifies that on non-Windows platforms
+// containerWorkdir returns the repo path unchanged (so the container mounts the
+// repo at its exact host path, making git worktree absolute references work).
+func TestContainerWorkdir_MirrorsPathOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows path mirroring test; skipping on Windows")
+	}
+	path := "/home/user/src/myrepo"
+	got := containerWorkdir(path)
+	if got != path {
+		t.Errorf("containerWorkdir(%q) = %q, want %q (path must be mirrored verbatim on Linux/macOS)", path, got, path)
+	}
+}
+
+// TestBuildServeArgs_MirroredMount verifies that buildServeArgs mounts the repo
+// at its real path (not /workspace) on non-Windows platforms, and injects
+// CONSTRUCT_WORKSPACE_PATH with the same value.
+func TestBuildServeArgs_MirroredMount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-mirror mount test; skipping on Windows")
+	}
+	repoPath := t.TempDir()
+	cfg := &Config{
+		Tool:     &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}},
+		Stack:    "base",
+		RepoPath: repoPath,
+	}
+
+	args := buildServeArgs(cfg, nil, "testimage", "sess1", "homevol", "", "", 4096)
+
+	wantMount := repoPath + ":" + repoPath + ":z"
+	if !containsPair(args, "-v", wantMount) {
+		t.Errorf("expected -v %s in buildServeArgs, got: %v", wantMount, args)
+	}
+	if !containsPair(args, "-w", repoPath) {
+		t.Errorf("expected -w %s in buildServeArgs, got: %v", repoPath, args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_WORKSPACE_PATH="+repoPath) {
+		t.Errorf("expected -e CONSTRUCT_WORKSPACE_PATH=%s in buildServeArgs, got: %v", repoPath, args)
+	}
+	// /workspace must NOT appear as a mount target — clean break from the old fixed path.
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, ":/workspace") {
+		t.Errorf("buildServeArgs must not mount at /workspace on non-Windows; got: %v", args)
+	}
+}
+
+// TestBuildRunArgs_MirroredMount verifies that buildRunArgs also uses the real
+// host path as the container mount point on non-Windows platforms.
+func TestBuildRunArgs_MirroredMount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-mirror mount test; skipping on Windows")
+	}
+	repoPath := t.TempDir()
+	cfg := &Config{
+		Tool:     &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}},
+		Stack:    "base",
+		RepoPath: repoPath,
+	}
+
+	args := buildRunArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+
+	wantMount := repoPath + ":" + repoPath + ":z"
+	if !containsPair(args, "-v", wantMount) {
+		t.Errorf("expected -v %s in buildRunArgs, got: %v", wantMount, args)
+	}
+	if !containsPair(args, "-w", repoPath) {
+		t.Errorf("expected -w %s in buildRunArgs, got: %v", repoPath, args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_WORKSPACE_PATH="+repoPath) {
+		t.Errorf("expected -e CONSTRUCT_WORKSPACE_PATH=%s in buildRunArgs, got: %v", repoPath, args)
+	}
+}
+
+// TestBuildDebugArgs_MirroredMount verifies the same for buildDebugArgs.
+func TestBuildDebugArgs_MirroredMount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-mirror mount test; skipping on Windows")
+	}
+	repoPath := t.TempDir()
+	cfg := &Config{
+		Tool:     &tools.Tool{Name: "testtool", RunCmd: []string{"opencode"}},
+		Stack:    "base",
+		RepoPath: repoPath,
+	}
+
+	args := buildDebugArgs(cfg, nil, "testimage", "sess1", "homevol", "", "")
+
+	wantMount := repoPath + ":" + repoPath + ":z"
+	if !containsPair(args, "-v", wantMount) {
+		t.Errorf("expected -v %s in buildDebugArgs, got: %v", wantMount, args)
+	}
+	if !containsPair(args, "-w", repoPath) {
+		t.Errorf("expected -w %s in buildDebugArgs, got: %v", repoPath, args)
+	}
+	if !containsPair(args, "-e", "CONSTRUCT_WORKSPACE_PATH="+repoPath) {
+		t.Errorf("expected -e CONSTRUCT_WORKSPACE_PATH=%s in buildDebugArgs, got: %v", repoPath, args)
+	}
+}
+
+// TestEntrypointScript_AgentsMD_WorkspacePath verifies that the entrypoint
+// writes CONSTRUCT_WORKSPACE_PATH into AGENTS.md when the env var is set.
+func TestEntrypointScript_AgentsMD_WorkspacePath(t *testing.T) {
+	if !buildEntrypointTestImage(t) {
+		t.Skip("docker not available or image build failed")
+	}
+	fakePath := "/home/user/src/myrepo"
+	got := runEntrypoint(t,
+		[]string{"-e", "CONSTRUCT=1", "-e", "CONSTRUCT_WORKSPACE_PATH=" + fakePath},
+		"cat ${HOME}/.config/opencode/AGENTS.md",
+	)
+	if !strings.Contains(got, fakePath) {
+		t.Errorf("AGENTS.md does not contain the workspace path %q; got:\n%s", fakePath, got)
+	}
+	// The old fixed /workspace path must not appear.
+	if strings.Contains(got, "`/workspace`") {
+		t.Errorf("AGENTS.md must not hardcode /workspace; got:\n%s", got)
+	}
+}
+
+// TestMirroredMount_ContainerSeesExactHostPath is an integration test that
+// actually starts a Docker container with the mirrored bind-mount and verifies:
+//
+//  1. The container's working directory is the real host path (not /workspace).
+//  2. A file written to the host directory before the run is readable at that
+//     exact path inside the container.
+//  3. The legacy /workspace path does NOT exist inside the container.
+//
+// The test is skipped when Docker is unavailable or when bind mounts from this
+// filesystem are not visible inside containers (e.g. Docker-in-Docker).
+func TestMirroredMount_ContainerSeesExactHostPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-mirror integration test; skipping on Windows")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("docker daemon not accessible")
+	}
+
+	// Probe: verify bind mounts from this filesystem are visible inside
+	// containers. In DinD environments paths resolve on the outer host, so
+	// files written here are invisible from inside spawned containers.
+	probeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(probeDir, "probe"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probeOut, _ := exec.Command("docker", "run", "--rm",
+		"-v", probeDir+":"+probeDir+":ro",
+		"ubuntu:22.04", "cat", probeDir+"/probe",
+	).Output()
+	if strings.TrimSpace(string(probeOut)) != "ok" {
+		t.Skip("bind mounts from current filesystem not visible inside containers (DinD environment)")
+	}
+
+	// Create the repo directory and write a sentinel file.
+	repoDir := t.TempDir()
+	sentinelPath := filepath.Join(repoDir, "sentinel.txt")
+	if err := os.WriteFile(sentinelPath, []byte("mirrored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run a container with the mirrored mount: repoDir → repoDir, workdir = repoDir.
+	// We verify three things in a single docker run to keep the test fast:
+	//   1. pwd matches the repo path
+	//   2. sentinel file is readable at its exact path
+	//   3. /workspace does not exist
+	shellCmd := fmt.Sprintf(
+		"pwd && cat %s/sentinel.txt && test ! -e /workspace && echo no-workspace",
+		repoDir,
+	)
+	out, err := exec.Command("docker", "run", "--rm",
+		"-v", repoDir+":"+repoDir,
+		"-w", repoDir,
+		"ubuntu:22.04",
+		"sh", "-c", shellCmd,
+	).Output()
+	if err != nil {
+		t.Fatalf("docker run failed: %v\nshell: %s", err, shellCmd)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected 3 lines of output, got: %q", string(out))
+	}
+
+	// 1. Working directory must be the real repo path.
+	if lines[0] != repoDir {
+		t.Errorf("pwd inside container = %q, want %q", lines[0], repoDir)
+	}
+	// 2. Sentinel file must be readable at its mirrored path.
+	if lines[1] != "mirrored" {
+		t.Errorf("sentinel.txt content = %q, want %q", lines[1], "mirrored")
+	}
+	// 3. /workspace must not exist (clean break from the old fixed mount).
+	if lines[2] != "no-workspace" {
+		t.Errorf("expected /workspace to be absent inside container, but it exists")
+	}
+}
+
 // CONSTRUCT_PORTS is set the entrypoint includes port-binding rules in AGENTS.md.
 func TestEntrypointScript_WritesAgentsMD_WithPortSection(t *testing.T) {
 	if !buildEntrypointTestImage(t) {

@@ -35,18 +35,23 @@ You are running inside a construct container.
 
 ## Workspace
 
-`/workspace` is the user's repository, bind-mounted from their machine.
+`<CONSTRUCT_WORKSPACE_PATH>` is the directory shared with the user,
+bind-mounted from their machine at its exact host path.
 Changes you make there are immediately visible to the user.
-This is the only directory shared with the user.
 
 ## Isolation
 
-Everything outside `/workspace` is isolated inside the container.
+Everything outside the shared directory is isolated inside the container.
 Your home directory (`/home/agent`) persists across sessions via a named Docker
 volume, so shell history, tool caches, and config files survive container
 restarts. The user's machine is separate — you cannot reach their localhost and
 they cannot reach yours.
 ```
+
+`CONSTRUCT_WORKSPACE_PATH` is injected as an env var by the runner and expanded
+by the entrypoint shell when writing the file. On Linux/macOS it holds the real
+absolute host path (e.g. `/home/user/src/myrepo`); on Windows it is
+`/workspace` (Docker Desktop fallback).
 
 The networking section (see below) is appended after this block.
 

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Path mirroring: repo mounted at its exact host path** — the container no longer mounts the repo at the fixed path `/workspace`. On Linux and macOS the repo is now mounted at its real absolute path (e.g. `/home/user/src/myrepo`), and the container's working directory is set to that same path. This makes git worktrees work correctly (git stores absolute host paths in worktree metadata, which now resolve identically inside the container), and allows running `construct` against multiple repos or worktrees simultaneously without path conflicts. The agent is informed of the shared path via the `CONSTRUCT_WORKSPACE_PATH` environment variable, which is expanded into `~/.config/opencode/AGENTS.md` at container start. On Windows, Docker Desktop cannot mirror host paths into the Linux VM, so the previous `/workspace` fallback is retained.
+
 ---
 
 ## [v0.9.0] — 2026-03-12

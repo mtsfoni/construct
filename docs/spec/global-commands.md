@@ -4,7 +4,7 @@
 
 OpenCode loads custom slash commands from two locations:
 
-- **Per-project:** `.opencode/commands/` in the repo root (already works — the repo is bind-mounted at `/workspace`)
+- **Per-project:** `.opencode/commands/` in the repo root (already works — the repo is bind-mounted at its exact host path)
 - **Global:** `~/.config/opencode/commands/` in the user's home directory
 
 The construct agent container has an isolated named Docker volume for `/home/agent`, so the host's `~/.config/opencode/commands/` directory is never visible to the agent. Global slash commands defined on the host are silently absent.

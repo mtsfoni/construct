@@ -353,9 +353,11 @@ func buildRunArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, homeVo
 	// context into ~/.config/opencode/AGENTS.md.
 	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
 
+	workdir := containerWorkdir(cfg.RepoPath)
 	args = append(args,
-		"-v", cfg.RepoPath+":/workspace:z",
-		"-w", "/workspace",
+		"-v", cfg.RepoPath+":"+workdir+":z",
+		"-w", workdir,
+		"-e", "CONSTRUCT_WORKSPACE_PATH="+workdir,
 	)
 
 	// Mount the host's global opencode commands directory read-only so the
@@ -484,9 +486,11 @@ func buildServeArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 
 	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
 
+	workdir := containerWorkdir(cfg.RepoPath)
 	args = append(args,
-		"-v", cfg.RepoPath+":/workspace:z",
-		"-w", "/workspace",
+		"-v", cfg.RepoPath+":"+workdir+":z",
+		"-w", workdir,
+		"-e", "CONSTRUCT_WORKSPACE_PATH="+workdir,
 	)
 
 	if cfg.Tool.Name == "opencode" {
@@ -589,9 +593,11 @@ func buildDebugArgs(cfg *Config, dindInst *dind.Instance, image, sessionID, home
 
 	args = append(args, "-e", "CONSTRUCT_DOCKER_MODE="+cfg.DockerMode)
 
+	workdir := containerWorkdir(cfg.RepoPath)
 	args = append(args,
-		"-v", cfg.RepoPath+":/workspace:z",
-		"-w", "/workspace",
+		"-v", cfg.RepoPath+":"+workdir+":z",
+		"-w", workdir,
+		"-e", "CONSTRUCT_WORKSPACE_PATH="+workdir,
 	)
 
 	if cfg.Tool.Name == "opencode" {
@@ -901,21 +907,21 @@ func generatedEntrypoint() string {
 		"# to inform the agent that it is running inside a construct container.\n" +
 		"# The networking section depends on CONSTRUCT_DOCKER_MODE.\n" +
 		"mkdir -p \"${HOME}/.config/opencode\"\n" +
-		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << 'AGENTSEOF'\n" +
+		"cat > \"${HOME}/.config/opencode/AGENTS.md\" << AGENTSEOF\n" +
 		"# Construct container context\n" +
 		"\n" +
 		"You are running inside a construct container.\n" +
 		"\n" +
 		"## Workspace\n" +
 		"\n" +
-		"`/workspace` is the user's repository, bind-mounted from their machine.\n" +
+		"\\`${CONSTRUCT_WORKSPACE_PATH}\\` is the directory shared with the user,\n" +
+		"bind-mounted from their machine at its exact host path.\n" +
 		"Changes you make there are immediately visible to the user.\n" +
-		"This is the only directory shared with the user.\n" +
 		"\n" +
 		"## Isolation\n" +
 		"\n" +
-		"Everything outside `/workspace` is isolated inside the container.\n" +
-		"Your home directory (`/home/agent`) persists across sessions via a named Docker\n" +
+		"Everything outside the shared directory is isolated inside the container.\n" +
+		"Your home directory (\\`/home/agent\\`) persists across sessions via a named Docker\n" +
 		"volume, so shell history, tool caches, and config files survive container\n" +
 		"restarts. The user's machine is separate — you cannot reach their localhost and\n" +
 		"they cannot reach yours.\n" +
