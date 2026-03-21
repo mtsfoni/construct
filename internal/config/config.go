@@ -51,7 +51,7 @@ func ConstructConfigDir() string {
 // AgentsParams holds the parameters used to generate the construct-agents.md file.
 type AgentsParams struct {
 	SessionID  string
-	Repo       string
+	Repo       string // working directory (the path passed to construct, not necessarily a git repo)
 	Tool       string
 	Stack      string
 	DockerMode string // "none", "dind", "dood"
@@ -71,18 +71,18 @@ func GenerateAgentsMD(p AgentsParams) string {
 	var sb strings.Builder
 
 	sb.WriteString("# construct session context\n\n")
-	sb.WriteString("You are running inside a **construct** container. This document describes your environment.\n\n")
+	sb.WriteString("You are running inside a **construct** container.\n\n")
 
 	sb.WriteString("## Container environment\n\n")
-	fmt.Fprintf(&sb, "- **Repo path:** `%s` (same path as on the host — no normalization)\n", p.Repo)
+	fmt.Fprintf(&sb, "- **Working directory:** `%s` (same path as on the host — no normalization)\n", p.Repo)
 	fmt.Fprintf(&sb, "- **Tool:** %s\n", p.Tool)
 	fmt.Fprintf(&sb, "- **Stack:** %s\n", p.Stack)
 	fmt.Fprintf(&sb, "- **Docker mode:** %s\n", p.DockerMode)
 	sb.WriteString("\n")
 
 	sb.WriteString("## Filesystem\n\n")
-	sb.WriteString("Your working directory is the repo path above. All file operations should use this exact path.\n")
-	sb.WriteString("You have read-write access to the repo. You do **not** have access to any other host paths.\n\n")
+	sb.WriteString("Your working directory is the path above. All file operations should use this exact path.\n")
+	sb.WriteString("You have read-write access to it. You do **not** have access to any other host paths.\n\n")
 
 	sb.WriteString("## Docker access\n\n")
 	switch p.DockerMode {
@@ -93,7 +93,7 @@ func GenerateAgentsMD(p AgentsParams) string {
 		sb.WriteString("**Warning:** You have access to the **host Docker daemon** (Docker-outside-of-Docker). Be careful —\n")
 		sb.WriteString("you can see and affect host containers and images.\n")
 	default:
-		sb.WriteString("You do **not** have access to Docker. If you need Docker, restart the session with `--docker dind`.\n")
+		sb.WriteString("You do **not** have access to Docker.\n")
 	}
 	sb.WriteString("\n")
 
@@ -109,19 +109,8 @@ func GenerateAgentsMD(p AgentsParams) string {
 	}
 
 	sb.WriteString("## Tool installation\n\n")
-	sb.WriteString("To install tools that persist between sessions, install them to `/agent/bin` or use standard\n")
-	sb.WriteString("package managers (they auto-install to the persistent `/agent` layer):\n\n")
-	sb.WriteString("- `npm install -g <pkg>` — installs to `/agent/lib/node_modules/.bin` (on PATH)\n")
-	sb.WriteString("- `pip install --user <pkg>` — installs to `/agent/home/.local/bin`\n")
-	sb.WriteString("- `go install <pkg>` — installs to `/agent/lib/go/bin`\n")
-	sb.WriteString("- For other tools: install to `/agent/bin/` directly\n\n")
-	sb.WriteString("Installed tools **survive container restarts and stack image rebuilds**.\n\n")
-
-	sb.WriteString("## Auth and credentials\n\n")
-	sb.WriteString("Credentials (API keys, tokens) are injected as environment variables from bind-mounted files.\n")
-	sb.WriteString("The opencode auth file (`~/.local/share/opencode/auth.json` on the host) is bind-mounted\n")
-	sb.WriteString("read-write, so tokens written by an interactive auth flow (e.g. `/connect`) persist to\n")
-	sb.WriteString("the host and are shared across all sessions automatically.\n")
+	sb.WriteString("Tools can be installed to persist between sessions — use standard package managers\n")
+	sb.WriteString("or install directly to `/agent/bin/`. Installed tools survive container restarts.\n")
 
 	return sb.String()
 }
