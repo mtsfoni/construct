@@ -298,12 +298,21 @@ func parseRunFlags(args []string, globalDebug bool) (cli.RunFlags, error) {
 	var portFlags multiFlag
 	fs.Var(&portFlags, "port", "publish a container port (repeatable)")
 
+	// If the first argument looks like a path (not a flag), extract it as the
+	// folder before calling fs.Parse. Go's flag package stops at the first
+	// non-flag argument, so "construct run ~/src --port 5000:5000" would
+	// otherwise leave "--port 5000:5000" unparsed.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		flags.Folder = args[0]
+		args = args[1:]
+	}
+
 	if err := fs.Parse(args); err != nil {
 		return cli.RunFlags{}, err
 	}
 
 	flags.Ports = []string(portFlags)
-	// A bare positional argument is treated as the folder path.
+	// A bare positional argument after flags is also accepted as the folder.
 	if flags.Folder == "" && fs.NArg() > 0 {
 		flags.Folder = fs.Arg(0)
 	}
