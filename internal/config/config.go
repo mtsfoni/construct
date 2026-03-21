@@ -97,15 +97,23 @@ func GenerateAgentsMD(p AgentsParams) string {
 	}
 	sb.WriteString("\n")
 
-	if len(p.Ports) > 0 {
+	userPorts := make([]PortMapping, 0, len(p.Ports))
+	for _, port := range p.Ports {
+		if port.ContainerPort != p.WebPort {
+			userPorts = append(userPorts, port)
+		}
+	}
+
+	if len(userPorts) > 0 {
 		sb.WriteString("## Port forwarding\n\n")
-		sb.WriteString("The following container ports are published to the host:\n\n")
-		for _, port := range p.Ports {
+		sb.WriteString("The following ports are forwarded from the container to the host.\n")
+		sb.WriteString("Use them to expose services (e.g. a dev server) to the user:\n\n")
+		for _, port := range userPorts {
 			fmt.Fprintf(&sb, "- Container port `%d` → Host port `%d`\n", port.ContainerPort, port.HostPort)
 		}
-		sb.WriteString("\nWhen starting a dev server or any service that should be accessible from the host:\n")
+		sb.WriteString("\nWhen starting a service on one of these ports:\n")
 		sb.WriteString("- Bind to `0.0.0.0` (not `127.0.0.1` or `localhost`)\n")
-		sb.WriteString("- Use the **container port** number from the list above\n\n")
+		sb.WriteString("- Use the **container port** number shown above\n\n")
 	}
 
 	sb.WriteString("## Tool installation\n\n")
