@@ -1,6 +1,6 @@
 # construct — Tools Spec
 
-Covers R-TOOL-1.
+Covers R-TOOL-1, R-TOOL-3.
 
 ---
 
@@ -35,6 +35,16 @@ URL may not be reachable for a brief period. This is acceptable; the CLI prints
 the URL and the user can refresh.
 
 The CLI prints this URL and optionally opens it in the default browser.
+
+---
+
+## Auto-approve mode (R-TOOL-3)
+
+All tool calls are auto-approved (yolo mode) inside construct sessions. This is
+implemented by setting `OPENCODE_CONFIG_CONTENT={"permission":"allow"}` in the
+container environment. This env var has the highest config precedence in opencode
+and overrides any `permission` settings in the user's own `opencode.json`. There
+is no way to start a construct session that requires interactive tool approvals.
 
 ---
 

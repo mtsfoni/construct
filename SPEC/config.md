@@ -59,8 +59,8 @@ needed.
 ## Construct-injected AGENTS.md (R-HOME-3)
 
 construct injects additional context into the agent's global instructions by
-generating a `construct-agents.md` file and mounting it where opencode will find
-it.
+generating a `construct-agents.md` file and loading it via opencode's
+`instructions` config field.
 
 ### What is injected
 
@@ -71,8 +71,7 @@ The generated file tells the agent:
   Docker usage.
 - Which ports are published (so the agent binds dev servers to `0.0.0.0` on the
   correct ports, not localhost only).
-  - That auth tokens acquired interactively are scoped to the agent layer (will not
-  persist after `destroy` or `purge`); for durable auth, authenticate on the host.
+- That auth tokens acquired interactively persist to the host data directory.
 - That the repo is at the exact same path as on the host.
 - Tool-installation advice: install tools to `/agent/bin` or using standard
   package managers (they install into `/agent/lib`) to ensure persistence.
@@ -93,31 +92,37 @@ and bind-mounts it into the container at:
 /run/construct/agents.md   (read-only)
 ```
 
-The container's entrypoint script copies this file to its final destination on
-every container start:
+The container's entrypoint writes `/agent/home/.config/opencode/opencode.json`
+into the agent layer on every container start:
 
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "instructions": ["/run/construct/agents.md"]
+}
 ```
-/agent/home/.config/opencode/construct-agents.md
-```
 
-This two-step approach (bind at `/run/construct/agents.md`, copy to final path)
-avoids the Docker limitation where a file bind mount cannot overlay a path inside
-another bind mount (see `SPEC/containers.md` for the full mount layering
-explanation).
+This is the "global" `opencode.json` inside the container (loaded via
+`XDG_CONFIG_HOME`). The `instructions` field tells opencode to load
+`/run/construct/agents.md` as an additional instruction file. opencode
+combines all instruction files, so this is additive alongside the user's
+own `~/.config/opencode/AGENTS.md`.
 
-opencode reads global instruction files from both `OPENCODE_CONFIG_DIR` (the
-host config mount) and `$XDG_CONFIG_HOME/opencode/` (which resolves to
-`/agent/home/.config/opencode/`). The construct file is therefore picked up
-from the latter path without any special opencode configuration.
+### Auto-approve (yolo) mode
+
+The daemon sets `OPENCODE_CONFIG_CONTENT={"permission":"allow"}` in the
+container environment. This env var has the highest config precedence in
+opencode (overrides global, project, and `OPENCODE_CONFIG` file), ensuring
+all tool calls are auto-approved and the headless agent never blocks waiting
+for user input.
 
 ### Combination with user's global AGENTS.md
 
-The user's own `AGENTS.md` (if it exists) in the host opencode config directory
-is picked up from the read-only host config mount. construct's
-`construct-agents.md` is a separate file at a different path. opencode
-concatenates all global instruction files, so both are in effect. The user's own
-instructions take precedence in any conflict because they are read last (opencode's
-file-ordering behaviour is documented in the opencode spec).
+The user's own `AGENTS.md` (if it exists) in the host opencode config
+directory is picked up from the host config mount via `OPENCODE_CONFIG_DIR`.
+construct's context file is loaded separately via the `instructions` field.
+opencode combines all instruction files, so both are in effect simultaneously.
 
 ---
 
@@ -146,7 +151,7 @@ any other per-session daemon-side state.
 |---|---|---|---|
 | opencode global config dir | `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | same as host path | read-write |
 | opencode data dir | `$XDG_DATA_HOME/opencode/` (or `~/.local/share/opencode/`) | same as host path | read-write |
-| construct injected instructions | `~/.config/construct/sessions/<id>/construct-agents.md` | `/run/construct/agents.md` (bind); entrypoint copies to `/agent/home/.config/opencode/construct-agents.md` | read-only bind |
+| construct injected instructions | `~/.config/construct/sessions/<id>/construct-agents.md` | `/run/construct/agents.md` (read-only bind); loaded via `instructions` in entrypoint-written `opencode.json` | read-only bind |
 | Agent's writable home | (volume) | `/agent/home/` | read-write |
 | Repo | `<repo>` | `<repo>` (same path) | read-write |
 
@@ -160,6 +165,7 @@ any other per-session daemon-side state.
 | `XDG_CONFIG_HOME` | `/agent/home/.config` | Overrides XDG default so opencode config writes land in agent layer |
 | `XDG_DATA_HOME` | host opencode data dir parent (e.g. `~/.local/share`) | Points XDG data resolution at the host-mounted data directory |
 | `OPENCODE_CONFIG_DIR` | resolved host opencode config path (e.g. `~/.config/opencode`) | Points opencode at the host config for reading |
+| `OPENCODE_CONFIG_CONTENT` | `{"permission":"allow"}` | Highest-precedence config override; enforces auto-approve (yolo) mode |
 
 The CLI resolves the host opencode config path by checking `$XDG_CONFIG_HOME/opencode`
 (falling back to `~/.config/opencode`) and passes it to the daemon. The daemon

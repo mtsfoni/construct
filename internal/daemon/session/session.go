@@ -821,6 +821,11 @@ func buildEnv(s *registry.Session, shortID string) []string {
 		"PATH=/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"NPM_CONFIG_PREFIX=/agent",
 		fmt.Sprintf("OPENCODE_CONFIG_DIR=%s", s.OpenCodeConfigDir),
+		// OPENCODE_CONFIG_CONTENT has the highest precedence of all opencode
+		// config sources (overrides global, project, and OPENCODE_CONFIG).
+		// We use it to enforce permission:allow (yolo/auto-approve mode) so the
+		// headless agent never blocks waiting for user input.
+		`OPENCODE_CONFIG_CONTENT={"permission":"allow"}`,
 		fmt.Sprintf("CONSTRUCT_SESSION_ID=%s", s.ID),
 		fmt.Sprintf("CONSTRUCT_REPO=%s", s.Repo),
 		fmt.Sprintf("CONSTRUCT_TOOL=%s", s.Tool),
