@@ -324,15 +324,15 @@ func TestSession_Start_FlagConflictWarning(t *testing.T) {
 		t.Fatalf("first Start: %v", err)
 	}
 
-	// Re-start with different stack — should warn
+	// Re-start with different stack — should signal settings conflict
 	p2 := defaultParams(repo)
 	p2.Stack = stacks.StackNode
 	res, err := m.Start(context.Background(), p2, nil)
 	if err != nil {
 		t.Fatalf("second Start: %v", err)
 	}
-	if res.Warning == "" {
-		t.Error("expected warning for conflicting stack, got empty string")
+	if !res.SettingsConflict {
+		t.Error("expected SettingsConflict=true for conflicting stack, got false")
 	}
 	// Stack should not have changed
 	if res.Session.Stack != stacks.StackBase {

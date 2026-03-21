@@ -102,9 +102,38 @@ func (c *CLI) Run(ctx context.Context, flags RunFlags, w io.Writer, errW io.Writ
 		return fmt.Errorf("no response from daemon")
 	}
 
-	// Print warning if flags were ignored.
+	// Print warning if flags were ignored — legacy; now replaced by settings_conflict prompt.
+	// (kept for forward compatibility with older daemons)
 	if warn, ok := result["warning"].(string); ok && warn != "" {
-		fmt.Fprintf(errW, "Warning: %s\n", warn)
+		fmt.Fprintf(errW, "warning: %s\n", warn)
+	}
+
+	// If the daemon reports a settings conflict, prompt the user.
+	if conflict, _ := result["settings_conflict"].(bool); conflict {
+		choice, err := promptSettingsConflict(result, flags, errW)
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case "cancel":
+			fmt.Fprintln(errW, "Cancelled.")
+			return nil
+		case "attach":
+			// proceed with the existing session's result as-is
+		case "restart":
+			// destroy existing session then start fresh
+			sess, _ := result["session"].(map[string]interface{})
+			sessionID, _ := sess["id"].(string)
+			folder, _ := sess["repo"].(string)
+			if _, err := c.client.Do(ctx, "session.destroy", map[string]interface{}{
+				"session_id": sessionID,
+				"repo":       folder,
+			}); err != nil {
+				return fmt.Errorf("destroy session for restart: %w", err)
+			}
+			// Re-run with the same flags (which will now create a fresh session).
+			return c.Run(ctx, flags, w, errW)
+		}
 	}
 
 	webURL, _ := result["web_url"].(string)
@@ -470,6 +499,93 @@ func (c *CLI) CredList(ctx context.Context, folder string, w io.Writer) error {
 }
 
 // --- helpers ---
+
+// promptSettingsConflict prints a conflict summary and prompts the user to
+// choose restart, attach, or cancel. Returns "restart", "attach", or "cancel".
+// If stdin is not a TTY, returns "cancel".
+func promptSettingsConflict(result map[string]interface{}, flags RunFlags, errW io.Writer) (string, error) {
+	sess, _ := result["session"].(map[string]interface{})
+
+	existing := struct {
+		tool, stack, docker string
+		ports               []interface{}
+	}{
+		tool:   strVal(sess, "tool"),
+		stack:  strVal(sess, "stack"),
+		docker: strVal(sess, "docker_mode"),
+		ports:  sliceVal(sess, "ports"),
+	}
+
+	fmt.Fprintf(errW, "Session for %s is already running with different settings:\n", strVal(sess, "repo"))
+	printConflictField(errW, "tool", existing.tool, flags.Tool)
+	printConflictField(errW, "stack", existing.stack, flags.Stack)
+	printConflictField(errW, "docker", existing.docker, flags.DockerMode)
+
+	existingPorts := formatPortMappings(existing.ports)
+	requestedPorts := strings.Join(flags.Ports, ",")
+	if requestedPorts == "" {
+		requestedPorts = "(none)"
+	}
+	if existingPorts == "" {
+		existingPorts = "(none)"
+	}
+	label := "same"
+	if existingPorts != requestedPorts {
+		label = "differ"
+	}
+	fmt.Fprintf(errW, "  ports:  %-20s (requested: %-20s) [%s]\n", existingPorts, requestedPorts, label)
+
+	// Non-interactive: cancel.
+	if !isTerminal(os.Stderr) {
+		fmt.Fprintln(errW, "Non-interactive: use 'construct destroy' then 'construct run' to restart with new settings.")
+		return "cancel", nil
+	}
+
+	fmt.Fprint(errW, "[r] restart with new settings  [a] attach to existing  [c] cancel\nChoice: ")
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	switch answer {
+	case "r", "restart":
+		return "restart", nil
+	case "a", "attach":
+		return "attach", nil
+	default:
+		return "cancel", nil
+	}
+}
+
+func printConflictField(w io.Writer, label, existing, requested string) {
+	diff := "same"
+	if existing != requested {
+		diff = "differ"
+	}
+	fmt.Fprintf(w, "  %-8s%-20s (requested: %-20s) [%s]\n", label+":", existing, requested, diff)
+}
+
+func strVal(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+func sliceVal(m map[string]interface{}, key string) []interface{} {
+	v, _ := m[key].([]interface{})
+	return v
+}
+
+func formatPortMappings(ports []interface{}) string {
+	parts := make([]string, 0, len(ports))
+	for _, raw := range ports {
+		pm, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		hp, _ := pm["host_port"].(float64)
+		cp, _ := pm["container_port"].(float64)
+		parts = append(parts, fmt.Sprintf("%d:%d", int(hp), int(cp)))
+	}
+	return strings.Join(parts, ",")
+}
 
 // sessionRecord is a lightweight representation of a session for client-side use.
 type sessionRecord struct {

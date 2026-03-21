@@ -54,10 +54,10 @@ type StartParams struct {
 
 // StartResult is the response from session.start.
 type StartResult struct {
-	Session *registry.Session
-	WebURL  string
-	TUIHint string
-	Warning string
+	Session          *registry.Session
+	WebURL           string
+	TUIHint          string
+	SettingsConflict bool // true when requested flags differ from the existing session
 }
 
 // ProgressFn is a callback for reporting progress to the caller.
@@ -220,21 +220,14 @@ func (m *Manager) Start(ctx context.Context, p StartParams, progress ProgressFn)
 }
 
 func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p StartParams, progress ProgressFn) (*StartResult, error) {
-	var warning string
-
-	if (p.Tool != "" && p.Tool != s.Tool) ||
-		(p.Stack != "" && p.Stack != s.Stack) ||
-		(p.DockerMode != "" && p.DockerMode != s.DockerMode) ||
-		p.Debug != s.Debug {
-		warning = "tool/stack/docker/debug flags ignored; session already exists"
-	}
+	conflict := settingsConflict(s, p)
 
 	if s.Status == registry.StatusRunning {
 		return &StartResult{
-			Session: s,
-			WebURL:  webURL(s),
-			TUIHint: tuiHint(s),
-			Warning: warning,
+			Session:          s,
+			WebURL:           webURL(s),
+			TUIHint:          tuiHint(s),
+			SettingsConflict: conflict,
 		}, nil
 	}
 
@@ -299,10 +292,10 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 	m.saveQuickstart(s)
 
 	return &StartResult{
-		Session: s,
-		WebURL:  webURL(s),
-		TUIHint: tuiHint(s),
-		Warning: warning,
+		Session:          s,
+		WebURL:           webURL(s),
+		TUIHint:          tuiHint(s),
+		SettingsConflict: conflict,
 	}, nil
 }
 
@@ -932,4 +925,43 @@ func dirToTar(dir string) (io.Reader, error) {
 	}
 	tw.Close()
 	return &buf, nil
+}
+
+// settingsConflict reports whether the requested start params differ from
+// the existing session's fixed settings (tool, stack, docker mode, debug,
+// or user-supplied ports).
+func settingsConflict(s *registry.Session, p StartParams) bool {
+	if (p.Tool != "" && p.Tool != s.Tool) ||
+		(p.Stack != "" && p.Stack != s.Stack) ||
+		(p.DockerMode != "" && p.DockerMode != s.DockerMode) ||
+		p.Debug != s.Debug {
+		return true
+	}
+	// Check ports: compare requested container ports against existing
+	// non-web container ports. Only flag a conflict when the caller
+	// explicitly supplied ports (len > 0).
+	if len(p.Ports) > 0 {
+		existing := make(map[int]struct{})
+		for _, pm := range s.Ports {
+			if pm.ContainerPort != tools.WebPort {
+				existing[pm.ContainerPort] = struct{}{}
+			}
+		}
+		requested := make(map[int]struct{})
+		for _, spec := range p.Ports {
+			_, c, err := netpkg.ParsePortSpec(spec)
+			if err == nil && c != tools.WebPort {
+				requested[c] = struct{}{}
+			}
+		}
+		if len(existing) != len(requested) {
+			return true
+		}
+		for cp := range requested {
+			if _, ok := existing[cp]; !ok {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -1,6 +1,6 @@
 # construct — Sessions Spec
 
-Covers R-SES-1 through R-SES-8, R-LIFE-1 through R-LIFE-4, R-LIFE-5, R-OBS-3.
+Covers R-SES-1 through R-SES-8, R-SES-3a, R-LIFE-1 through R-LIFE-4, R-LIFE-5, R-OBS-3.
 
 ---
 
@@ -110,10 +110,16 @@ per folder, R-SES-3).
        creates a fresh one with the updated `User` field before starting the
        agent. The agent layer volume is preserved across this recreation.
    b. If `status: running`: return connection info (pure attach; no changes).
-4. **Existing session, different tool/stack/docker/debug:**
-   - Return the existing session's connection info with a warning that the
-     new tool/stack/docker/debug flags were ignored. The daemon does not attempt
-     to change a running session's tool, stack, docker mode, or debug flag.
+ 4. **Existing session, different tool/stack/docker/ports/debug:**
+    - The daemon returns the existing session record and connection info with a
+      `settings_conflict: true` flag in the response. It does **not** ignore the
+      new flags or emit a warning itself — conflict resolution is the CLI's
+      responsibility (see `SPEC/cli.md`, R-SES-3a).
+    - If the CLI chooses **restart**: it first calls `session.destroy` then
+      `session.start` with the new flags as a fresh session.
+    - If the CLI chooses **attach**: it proceeds as a normal attach, ignoring
+      the new flags.
+    - If the CLI chooses **cancel**: it exits 0 without further daemon calls.
 
 ### Connection info response
 
@@ -122,14 +128,16 @@ per folder, R-SES-3).
   "session": { ... session record ... },
   "web_url": "http://localhost:<port>",
   "tui_hint": "opencode --socket /path/to/socket",
-  "warning": "tool/stack/docker/debug flags ignored; session already exists"
+  "settings_conflict": true
 }
 ```
 
 - `web_url` is present if the tool provides a web UI (opencode does via its built-in
   server). See `SPEC/tools.md` for per-tool web URL derivation.
 - `tui_hint` is a hint for TUI attachment (informational).
-- `warning` is present only when flags were ignored for an existing session.
+- `settings_conflict` is `true` when the CLI sent flags that differ from the
+  existing session's settings. The CLI must prompt the user (R-SES-3a) and
+  either restart, attach, or cancel.
 
 ---
 

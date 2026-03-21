@@ -1,6 +1,6 @@
 # construct — CLI Spec
 
-Covers R-SES-2, R-SES-4, R-SES-5, R-SES-6, R-SES-7, R-UX-1, R-UX-2, R-UX-3,
+Covers R-SES-2, R-SES-3, R-SES-3a, R-SES-4, R-SES-5, R-SES-6, R-SES-7, R-UX-1, R-UX-2, R-UX-3,
 R-UX-4, R-UX-6, R-UX-7, R-AUTH-4, R-OBS-5, R-LIFE-5.
 
 ---
@@ -100,12 +100,28 @@ path. For example, `construct /home/alice/src/myapp` and
    (from `os.Getuid()`), `host_gid` (from `os.Getgid()`),
    `opencode_config_dir` (resolved host opencode config path), and
    `opencode_data_dir` (resolved host opencode data path).
-5. If a session already exists for this folder:
-   - If `--tool`, `--stack`, `--docker`, or `--debug` are supplied and differ from
-     the existing session: print a warning and ignore the new values
-     (tool/stack/docker/debug are fixed for the session lifetime, R-SES-2).
-     Attach to the existing session.
-   - Otherwise: attach normally.
+5. If the daemon response includes `settings_conflict: true` (R-SES-3a):
+   - Print a summary of the conflict, e.g.:
+     ```
+     Session for /home/alice/src/myapp is already running with different settings:
+       tool:   opencode  (requested: opencode)  [same]
+       stack:  base      (requested: node)       [differ]
+       docker: none      (requested: none)       [same]
+       ports:  []        (requested: [3000:3000])[differ]
+     ```
+   - Prompt the user:
+     ```
+     [r] restart with new settings  [a] attach to existing  [c] cancel
+     Choice:
+     ```
+   - **restart**: call `session.destroy` then re-call `session.start` with the
+     original requested flags. Continue with step 6 using the new response.
+   - **attach**: continue with step 6 using the original response (ignoring
+     the new flags).
+   - **cancel**: print `Cancelled.` and exit 0.
+   - If stdin is not a TTY (non-interactive), treat as **cancel** and print a
+     message explaining that `--force-restart` is required to restart
+     non-interactively. (Future: add `--force-restart` flag.)
 6. Receive back the session connection info (web URL and/or TUI attach command).
 7. If `--web` (default): print the URL and optionally open it in the browser.
    Print the TUI attach hint if present.

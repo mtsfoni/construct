@@ -209,10 +209,10 @@ type sessionStartParams struct {
 }
 
 type sessionStartResult struct {
-	Session interface{} `json:"session"`
-	WebURL  string      `json:"web_url,omitempty"`
-	TUIHint string      `json:"tui_hint,omitempty"`
-	Warning string      `json:"warning,omitempty"`
+	Session          interface{} `json:"session"`
+	WebURL           string      `json:"web_url,omitempty"`
+	TUIHint          string      `json:"tui_hint,omitempty"`
+	SettingsConflict bool        `json:"settings_conflict,omitempty"`
 }
 
 type progressPayload struct {
@@ -249,10 +249,10 @@ func (s *Server) handleSessionStart(ctx context.Context, w *connWriter, raw json
 	}
 
 	w.sendEnd(sessionStartResult{ //nolint:errcheck
-		Session: result.Session,
-		WebURL:  result.WebURL,
-		TUIHint: result.TUIHint,
-		Warning: result.Warning,
+		Session:          result.Session,
+		WebURL:           result.WebURL,
+		TUIHint:          result.TUIHint,
+		SettingsConflict: result.SettingsConflict,
 	})
 }
 
