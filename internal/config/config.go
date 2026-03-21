@@ -126,12 +126,21 @@ func GenerateAgentsMD(p AgentsParams) string {
 	return sb.String()
 }
 
-// WriteAgentsMD writes the construct-agents.md file to the given directory.
-func WriteAgentsMD(dir string, p AgentsParams) error {
+// WriteAgentsMD writes the construct-agents.md file to the given directory
+// and chowns both the directory and the file to uid:gid so the host user
+// (not the daemon's root) owns them and can remove them on purge/destroy.
+// Chown errors are ignored when the caller lacks permission (e.g. in unit
+// tests running as a non-root user with a foreign uid/gid).
+func WriteAgentsMD(dir string, p AgentsParams, uid, gid int) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
+	_ = os.Chown(dir, uid, gid) //nolint:errcheck
 	content := GenerateAgentsMD(p)
 	path := filepath.Join(dir, "construct-agents.md")
-	return os.WriteFile(path, []byte(content), 0o644)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return err
+	}
+	_ = os.Chown(path, uid, gid) //nolint:errcheck
+	return nil
 }

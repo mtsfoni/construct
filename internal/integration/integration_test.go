@@ -810,7 +810,7 @@ func TestIntegration_ConfigWritesAgentsMD(t *testing.T) {
 		Stack:      stacks.StackBase,
 		DockerMode: "none",
 		WebPort:    4096,
-	})
+	}, os.Getuid(), os.Getgid())
 	if err != nil {
 		t.Fatalf("WriteAgentsMD: %v", err)
 	}

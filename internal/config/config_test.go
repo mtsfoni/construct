@@ -76,7 +76,7 @@ func TestWriteAgentsMD(t *testing.T) {
 		Repo:       "/home/alice/myapp",
 		DockerMode: "none",
 	}
-	if err := WriteAgentsMD(dir, p); err != nil {
+	if err := WriteAgentsMD(dir, p, os.Getuid(), os.Getgid()); err != nil {
 		t.Fatalf("WriteAgentsMD: %v", err)
 	}
 	data, err := os.ReadFile(dir + "/construct-agents.md")

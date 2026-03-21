@@ -276,7 +276,7 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 	}
 
 	sessionDir := m.sessionDir(s.ShortID())
-	if err := config.WriteAgentsMD(sessionDir, agentsParams(s)); err != nil {
+	if err := config.WriteAgentsMD(sessionDir, agentsParams(s), s.HostUID, s.HostGID); err != nil {
 		return nil, fmt.Errorf("write agents.md: %w", err)
 	}
 
@@ -355,7 +355,7 @@ func (m *Manager) createNew(ctx context.Context, p StartParams, progress Progres
 	}
 
 	sessionDir := m.sessionDir(shortID)
-	if err := config.WriteAgentsMD(sessionDir, agentsParams(s)); err != nil {
+	if err := config.WriteAgentsMD(sessionDir, agentsParams(s), s.HostUID, s.HostGID); err != nil {
 		return nil, fmt.Errorf("write agents.md: %w", err)
 	}
 
