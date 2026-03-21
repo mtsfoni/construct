@@ -70,6 +70,27 @@ func TestGenerateAgentsMD_NoPorts(t *testing.T) {
 	}
 }
 
+func TestGenerateAgentsMD_WebPortHidden(t *testing.T) {
+	// The web UI port (WebPort) is an internal detail and must not appear
+	// in the port forwarding section shown to the agent.
+	p := AgentsParams{
+		Repo:       "/tmp/proj",
+		DockerMode: "none",
+		WebPort:    4096,
+		Ports: []PortMapping{
+			{HostPort: 5000, ContainerPort: 5000},
+			{HostPort: 4096, ContainerPort: 4096},
+		},
+	}
+	got := GenerateAgentsMD(p)
+	if strings.Contains(got, "4096") {
+		t.Error("web port 4096 should not appear in agents.md")
+	}
+	if !strings.Contains(got, "5000") {
+		t.Error("user port 5000 should appear in agents.md")
+	}
+}
+
 func TestWriteAgentsMD(t *testing.T) {
 	dir := t.TempDir()
 	p := AgentsParams{
