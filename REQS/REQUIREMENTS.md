@@ -32,6 +32,19 @@ Each folder has at most one active session at a time. Running construct against
 a folder that already has a running session attaches to it rather than starting a
 second one.
 
+### R-SES-3a — Prompt when re-running a folder with different settings
+When `construct run` is called against a folder that already has a running session
+but the supplied flags (tool, stack, docker mode, ports) differ from what the session
+was started with, the CLI must prompt the user to choose one of:
+
+1. **Restart** — stop the existing session and start a new one with the new settings.
+2. **Attach** — ignore the new settings and attach to the existing session as-is.
+3. **Cancel** — do nothing and exit.
+
+If the flags are identical to the existing session, attach silently (existing R-SES-2/3
+behaviour). Opening a second concurrent session against the same folder is not
+supported and must not be offered as an option.
+
 ### R-SES-4 — List sessions
 I can see all currently running and stopped sessions at a glance — which folder each
 belongs to, which tool and stack it uses, whether it is running or stopped, and how
