@@ -1,84 +1,87 @@
+// Package tools describes the supported agent tools: install commands,
+// invoke commands, web UI ports, and related constants.
 package tools
 
-import (
-	"fmt"
-	"sort"
-	"strings"
+// Tool names.
+const (
+	ToolOpencode = "opencode"
 )
 
-// AuthFile describes a single host file that should be bind-mounted into the
-// container at a fixed path, typically used to persist a tool's auth tokens
-// (e.g. opencode's auth.json) across repos and --reset without mounting a
-// whole directory from a named volume.
-type AuthFile struct {
-	// HostPath is the absolute path on the host (e.g. "~/.construct/opencode/auth.json").
-	// Tilde expansion is NOT performed here; callers must expand it before use.
-	HostPath string
-	// ContainerPath is the absolute path inside the container where the file is mounted.
-	ContainerPath string
-}
+// DefaultTool is the tool used when none is specified.
+const DefaultTool = ToolOpencode
 
-// Tool defines how an AI coding tool is installed, configured, and invoked inside the agent container.
-type Tool struct {
-	// Name is the tool identifier used in image names and volume names (e.g. "opencode").
-	Name string
-	// InstallCmds are shell commands run as root during image build to install the tool.
-	InstallCmds []string
-	// AuthEnvVars lists the environment variable names the tool needs for authentication.
-	AuthEnvVars []string
-	// RunCmd is the command (and arguments) used to start the tool inside the container.
-	RunCmd []string
-	// ExtraEnv holds additional environment variables to inject at run time (e.g. yolo flags).
-	ExtraEnv map[string]string
-	// HomeFiles maps paths relative to /home/agent to file contents that should be
-	// written into the home volume on first initialisation (e.g. tool config files).
-	HomeFiles map[string]string
-	// AuthVolumePath is the absolute path inside the container where the tool stores
-	// its OAuth tokens and persistent auth state (e.g. "/home/agent/.local/share/opencode").
-	// When non-empty, a global named Docker volume is mounted at this path so that
-	// auth state is shared across all repos and survives --reset.
-	AuthVolumePath string
-	// AuthFiles is a list of individual host files to bind-mount into the container
-	// for persisting auth state globally without mounting an entire directory via a
-	// named volume. This allows the session database (opencode.db) to remain in the
-	// per-repo home volume while only the auth token file is shared globally.
-	// The runner calls ensureAuthFile for each entry to create the host file if absent.
-	AuthFiles []AuthFile
-}
+// WebPort is the port opencode binds its web server to inside the container.
+const WebPort = 4096
 
-var registry = map[string]*Tool{}
-
-// register adds a Tool to the global registry; called from each tool's init().
-func register(t *Tool) {
-	registry[t.Name] = t
-}
-
-// Opencode returns the opencode tool definition.
-func Opencode() *Tool {
-	return registry["opencode"]
-}
-
-// Get returns the named Tool or an error if it is not registered.
-func Get(name string) (*Tool, error) {
-	t, ok := registry[name]
-	if !ok {
-		return nil, fmt.Errorf("unknown tool %q; supported tools: %s", name, knownTools())
+// InstallCommand returns the shell command used to install a tool into the
+// agent layer. The command is run via docker exec inside the container.
+func InstallCommand(tool string) string {
+	switch tool {
+	case ToolOpencode:
+		return "npm install -g opencode-ai"
+	default:
+		return ""
 	}
-	return t, nil
 }
 
-// knownTools returns a sorted, comma-separated list of registered tool names.
-func knownTools() string {
-	names := All()
-	sort.Strings(names)
-	return strings.Join(names, ", ")
-}
-
-// All returns a slice of every registered tool name.
-func All() []string {
-	names := make([]string, 0, len(registry))
-	for k := range registry {
-		names = append(names, k)
+// InvokeCommand returns the command used to start the tool in yolo mode.
+// port is the container-side port the tool should bind to.
+func InvokeCommand(tool string, port int) []string {
+	switch tool {
+	case ToolOpencode:
+		return []string{"opencode", "serve", "--hostname", "0.0.0.0", "--port", itoa(port)}
+	default:
+		return nil
 	}
-	return names
+}
+
+// BinaryPath returns the expected path of the tool binary inside the agent layer.
+func BinaryPath(tool string) string {
+	switch tool {
+	case ToolOpencode:
+		return "/agent/bin/opencode"
+	default:
+		return ""
+	}
+}
+
+// HasWebUI returns true if the tool exposes a web interface.
+func HasWebUI(tool string) bool {
+	switch tool {
+	case ToolOpencode:
+		return true
+	default:
+		return false
+	}
+}
+
+// LogPath returns the path inside the container where the tool writes its logs,
+// or an empty string if the tool does not write to a log file.
+// Used by daemon reconciliation to re-attach log streaming after a restart.
+func LogPath(tool string) string {
+	switch tool {
+	case ToolOpencode:
+		return "/agent/home/.local/share/opencode/opencode.log"
+	default:
+		return ""
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	buf := make([]byte, 0, 10)
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		buf = append([]byte{byte('0' + n%10)}, buf...)
+		n /= 10
+	}
+	if neg {
+		buf = append([]byte{'-'}, buf...)
+	}
+	return string(buf)
 }

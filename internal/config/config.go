@@ -1,169 +1,125 @@
-// Package config manages construct's .env credential files.
-//
-// Two scopes are supported:
-//   - Global:    ~/.construct/.env  (all repos, all tools)
-//   - Local:     <repoDir>/.construct/.env  (overrides global for one repo)
-//
-// The file format is KEY=VALUE, one per line, with # comments and blank lines allowed.
+// Package config handles host opencode config path resolution and generation
+// of the construct-injected AGENTS.md file (construct-agents.md).
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// GlobalFile returns the path to the global env file (~/.construct/.env).
-func GlobalFile() (string, error) {
+// OpenCodeConfigDir returns the host opencode configuration directory path,
+// respecting the XDG_CONFIG_HOME convention.
+func OpenCodeConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "opencode")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home dir: %w", err)
+		return filepath.Join("~", ".config", "opencode")
 	}
-	return filepath.Join(home, ".construct", ".env"), nil
+	return filepath.Join(home, ".config", "opencode")
 }
 
-// LocalFile returns the path to the per-repo env file inside dir.
-func LocalFile(dir string) string {
-	return filepath.Join(dir, ".construct", ".env")
-}
-
-// Set writes or updates key=value in the env file at path.
-// Parent directories and the file itself are created with mode 0700/0600
-// respectively if they do not already exist.
-// Comments and unrelated lines are preserved.
-func Set(path, key, value string) error {
-	lines, err := readLines(path)
+// ConstructConfigDir returns the construct configuration/state directory path,
+// respecting the XDG_CONFIG_HOME convention.
+func ConstructConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "construct")
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return filepath.Join("~", ".config", "construct")
 	}
-
-	newLine := key + "=" + value
-	replaced := false
-	for i, line := range lines {
-		k, _, ok := parseLine(line)
-		if ok && k == key {
-			lines[i] = newLine
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		lines = append(lines, newLine)
-	}
-
-	return writeLines(path, lines)
+	return filepath.Join(home, ".config", "construct")
 }
 
-// Unset removes key from the env file at path.
-// No-ops if the file does not exist or the key is not present.
-func Unset(path, key string) error {
-	lines, err := readLines(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	filtered := lines[:0]
-	for _, line := range lines {
-		k, _, ok := parseLine(line)
-		if ok && k == key {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-
-	return writeLines(path, filtered)
+// AgentsParams holds the parameters used to generate the construct-agents.md file.
+type AgentsParams struct {
+	SessionID  string
+	Repo       string
+	Tool       string
+	Stack      string
+	DockerMode string // "none", "dind", "dood"
+	Ports      []PortMapping
+	WebPort    int
 }
 
-// List reads all key=value pairs from the env file at path.
-// Returns an empty map (and no error) if the file does not exist.
-// Comments and blank lines are ignored.
-func List(path string) (map[string]string, error) {
-	lines, err := readLines(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]string{}, nil
-		}
-		return nil, err
-	}
-
-	m := make(map[string]string)
-	for _, line := range lines {
-		k, v, ok := parseLine(line)
-		if ok {
-			m[k] = v
-		}
-	}
-	return m, nil
+// PortMapping represents a published port.
+type PortMapping struct {
+	HostPort      int
+	ContainerPort int
 }
 
-// parseLine parses a single line into key and value.
-// Returns ok=false for blank lines and comments.
-func parseLine(line string) (key, value string, ok bool) {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-		return "", "", false
+// GenerateAgentsMD generates the content of the construct-agents.md file
+// for a session.
+func GenerateAgentsMD(p AgentsParams) string {
+	var sb strings.Builder
+
+	sb.WriteString("# construct session context\n\n")
+	sb.WriteString("You are running inside a **construct** container. This document describes your environment.\n\n")
+
+	sb.WriteString("## Container environment\n\n")
+	fmt.Fprintf(&sb, "- **Repo path:** `%s` (same path as on the host — no normalization)\n", p.Repo)
+	fmt.Fprintf(&sb, "- **Tool:** %s\n", p.Tool)
+	fmt.Fprintf(&sb, "- **Stack:** %s\n", p.Stack)
+	fmt.Fprintf(&sb, "- **Docker mode:** %s\n", p.DockerMode)
+	sb.WriteString("\n")
+
+	sb.WriteString("## Filesystem\n\n")
+	sb.WriteString("Your working directory is the repo path above. All file operations should use this exact path.\n")
+	sb.WriteString("You have read-write access to the repo. You do **not** have access to any other host paths.\n\n")
+
+	sb.WriteString("## Docker access\n\n")
+	switch p.DockerMode {
+	case "dind":
+		sb.WriteString("You have access to a private Docker daemon (Docker-in-Docker). The `DOCKER_HOST` environment variable\n")
+		sb.WriteString("points to it. You can build images, run containers, etc. You **cannot** see host containers or images.\n")
+	case "dood":
+		sb.WriteString("**Warning:** You have access to the **host Docker daemon** (Docker-outside-of-Docker). Be careful —\n")
+		sb.WriteString("you can see and affect host containers and images.\n")
+	default:
+		sb.WriteString("You do **not** have access to Docker. If you need Docker, restart the session with `--docker dind`.\n")
 	}
-	k, v, found := strings.Cut(trimmed, "=")
-	if !found {
-		return "", "", false
-	}
-	k = strings.TrimSpace(k)
-	v = strings.TrimSpace(v)
-	// Strip surrounding quotes (single or double).
-	if len(v) >= 2 {
-		if (v[0] == '"' && v[len(v)-1] == '"') ||
-			(v[0] == '\'' && v[len(v)-1] == '\'') {
-			v = v[1 : len(v)-1]
+	sb.WriteString("\n")
+
+	if len(p.Ports) > 0 {
+		sb.WriteString("## Port forwarding\n\n")
+		sb.WriteString("The following container ports are published to the host:\n\n")
+		for _, port := range p.Ports {
+			fmt.Fprintf(&sb, "- Container port `%d` → Host port `%d`\n", port.ContainerPort, port.HostPort)
 		}
+		sb.WriteString("\nWhen starting a dev server or any service that should be accessible from the host:\n")
+		sb.WriteString("- Bind to `0.0.0.0` (not `127.0.0.1` or `localhost`)\n")
+		sb.WriteString("- Use the **container port** number from the list above\n\n")
 	}
-	return k, v, true
+
+	sb.WriteString("## Tool installation\n\n")
+	sb.WriteString("To install tools that persist between sessions, install them to `/agent/bin` or use standard\n")
+	sb.WriteString("package managers (they auto-install to the persistent `/agent` layer):\n\n")
+	sb.WriteString("- `npm install -g <pkg>` — installs to `/agent/lib/node_modules/.bin` (on PATH)\n")
+	sb.WriteString("- `pip install --user <pkg>` — installs to `/agent/home/.local/bin`\n")
+	sb.WriteString("- `go install <pkg>` — installs to `/agent/lib/go/bin`\n")
+	sb.WriteString("- For other tools: install to `/agent/bin/` directly\n\n")
+	sb.WriteString("Installed tools **survive container restarts and stack image rebuilds**.\n\n")
+
+	sb.WriteString("## Auth and credentials\n\n")
+	sb.WriteString("Credentials (API keys, tokens) are injected as environment variables from bind-mounted files.\n")
+	sb.WriteString("If you run an interactive auth flow inside this container (e.g. `/connect`), the resulting\n")
+	sb.WriteString("tokens are stored in the **agent layer** — they survive `stop`/`start` but are **lost on reset**.\n")
+	sb.WriteString("For durable global auth, authenticate on the host (outside construct) so the tokens land\n")
+	sb.WriteString("in `~/.config/opencode/` where all sessions will pick them up.\n")
+
+	return sb.String()
 }
 
-// readLines returns the lines of path (without trailing newlines).
-// Returns an empty slice if the file does not exist.
-func readLines(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
+// WriteAgentsMD writes the construct-agents.md file to the given directory.
+func WriteAgentsMD(dir string, p AgentsParams) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create session dir: %w", err)
 	}
-	defer f.Close()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	return lines, scanner.Err()
-}
-
-// writeLines writes lines (joined by newlines) to path atomically.
-// Creates parent dirs with 0700 and the file itself with 0600.
-func writeLines(path string, lines []string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n"
-	}
-
-	// Write to a temp file next to the target for an atomic rename.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp) //nolint:errcheck
-		return fmt.Errorf("rename to target: %w", err)
-	}
-	return nil
+	content := GenerateAgentsMD(p)
+	path := filepath.Join(dir, "construct-agents.md")
+	return os.WriteFile(path, []byte(content), 0o644)
 }

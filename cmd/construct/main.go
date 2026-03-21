@@ -1,349 +1,302 @@
+// Command construct is the CLI for the construct agent runner.
 package main
 
 import (
+	"bufio"
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
+	"syscall"
 
-	"github.com/mtsfoni/construct/internal/buildinfo"
-	"github.com/mtsfoni/construct/internal/config"
-	"github.com/mtsfoni/construct/internal/runner"
-	"github.com/mtsfoni/construct/internal/stacks"
-	"github.com/mtsfoni/construct/internal/tools"
+	"github.com/construct-run/construct/internal/bootstrap"
+	"github.com/construct-run/construct/internal/cli"
+	"github.com/construct-run/construct/internal/config"
+	"github.com/construct-run/construct/internal/platform"
+	"github.com/construct-run/construct/internal/version"
 )
 
-// portFlag is a repeatable --port flag value. Each call to Set appends one
-// "host:container" (or bare "port") mapping, allowing:
-//
-//	construct --port 3000 --port 8080:8080 ...
-type portFlag []string
-
-func (p *portFlag) String() string { return strings.Join(*p, ", ") }
-func (p *portFlag) Set(v string) error {
-	*p = append(*p, v)
-	return nil
-}
-
-// splitPassthrough splits args on the first bare "--" token.
-// The left slice contains everything before "--" (construct flags and path).
-// The right slice contains everything after "--" (tool pass-through args).
-// If "--" is absent, right is nil.
-func splitPassthrough(args []string) (left, right []string) {
-	for i, arg := range args {
-		if arg == "--" {
-			return args[:i], args[i+1:]
-		}
-	}
-	return args, nil
-}
-
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-version") {
-		v := buildinfo.Version
-		if v == "" {
-			v = "dev"
-		}
-		fmt.Println("construct " + v)
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "config" {
-		runConfig(os.Args[2:])
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "qs" {
-		runQuickstart(os.Args[2:])
-		return
-	}
-	runAgent(os.Args[1:])
+	os.Exit(run())
 }
 
-// runAgent is the original construct behaviour: build images and launch the agent.
-func runAgent(args []string) {
-	constructArgs, passthroughArgs := splitPassthrough(args)
+func run() int {
+	if err := runCLI(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
+}
 
-	allStacks := stacks.All()
+func runCLI() error {
+	// Global flags
+	var (
+		globalDebug      bool
+		globalSocketPath string
+		globalVersion    bool
+	)
 
-	fs := flag.NewFlagSet("construct", flag.ExitOnError)
-	stackName := fs.String("stack", "base", "Stack image to use: "+strings.Join(allStacks, ", "))
-	rebuild := fs.Bool("rebuild", false, "Force rebuild of the stack and tool images")
-	debug := fs.Bool("debug", false, "Start an interactive shell instead of the agent (for troubleshooting)")
-	reset := fs.Bool("reset", false, "Wipe and re-seed the agent home volume before starting")
-	mcp := fs.Bool("mcp", false, "Activate MCP servers (e.g. @playwright/mcp); requires --stack ui for browser automation")
-	dockerMode := fs.String("docker", "none", "Docker access mode: none (default, no Docker), dood (host socket — grants root-equivalent host access; disables SELinux confinement), dind (isolated sidecar)")
-	servePort := fs.Int("serve-port", 0, "Port for the opencode HTTP server inside the container (default 4096)")
-	client := fs.String("client", "", "Local client to connect to the opencode server: tui (opencode attach), web (browser), or empty for auto-detect")
-	var ports portFlag
-	fs.Var(&ports, "port", "Publish a container port to the host (repeatable): --port 3000 --port 8080:8080")
+	// We'll parse global flags manually before the subcommand.
+	args := os.Args[1:]
+	args, globalDebug, globalSocketPath, globalVersion = parseGlobalFlags(args)
 
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct [--stack <stack>] [--docker <mode>] [--rebuild] [--reset] [--debug] [--mcp] [--port <port>] [--serve-port <port>] [--client <tui|web>] [path] [-- <tool-args>]\n\n")
-		fmt.Fprintf(os.Stderr, "Subcommands:\n")
-		fmt.Fprintf(os.Stderr, "  config    Manage credential environment variables\n")
-		fmt.Fprintf(os.Stderr, "  qs        Re-run the last stack used in the current repo\n\n")
-		fmt.Fprintf(os.Stderr, "Other flags:\n")
-		fmt.Fprintf(os.Stderr, "  --version  Print the construct version and exit\n\n")
-		fmt.Fprintf(os.Stderr, "Pass-through args:\n")
-		fmt.Fprintf(os.Stderr, "  Anything after -- is forwarded verbatim to the tool inside the container.\n")
-		fmt.Fprintf(os.Stderr, "  Example: construct qs -- continue-session <session-id>\n\n")
-		fmt.Fprintf(os.Stderr, "Available stacks:\n")
-		for _, s := range allStacks {
-			fmt.Fprintf(os.Stderr, "  %s\n", s)
+	if globalVersion {
+		fmt.Printf("construct %s\n", version.Version)
+		return nil
+	}
+
+	// Resolve the config dir and socket path.
+	constructConfigDir := config.ConstructConfigDir()
+	if globalSocketPath == "" {
+		globalSocketPath = filepath.Join(constructConfigDir, "daemon.sock")
+	}
+
+	// Determine subcommand.
+	cmd := "run"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "run", "qs", "ls", "list", "attach", "stop", "destroy", "reset", "logs", "config":
+			cmd = args[0]
+			if cmd == "list" {
+				cmd = "ls"
+			}
+			args = args[1:]
 		}
-		fmt.Fprintf(os.Stderr, "\nDocker modes:\n")
-		fmt.Fprintf(os.Stderr, "  none   No Docker access inside the agent container (default)\n")
-		fmt.Fprintf(os.Stderr, "  dood   Docker-outside-of-Docker: bind-mounts the host socket (/var/run/docker.sock)\n")
-		fmt.Fprintf(os.Stderr, "         Warning: grants the agent root-equivalent access to the host via the Docker daemon.\n")
-		fmt.Fprintf(os.Stderr, "         SELinux confinement is disabled (--security-opt label=disable) for socket access.\n")
-		fmt.Fprintf(os.Stderr, "         Use dind for stronger isolation.\n")
-		fmt.Fprintf(os.Stderr, "  dind   Docker-in-Docker: starts a privileged dind sidecar container\n")
-		fmt.Fprintf(os.Stderr, "\nClient modes (--client):\n")
-		fmt.Fprintf(os.Stderr, "  <empty>  Auto-detect: opencode attach if opencode on PATH, else browser (default)\n")
-		fmt.Fprintf(os.Stderr, "  tui      Always use opencode attach; error if opencode not on PATH\n")
-		fmt.Fprintf(os.Stderr, "  web      Always open browser directly\n")
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  construct --stack dotnet /path/to/repo\n")
-		fmt.Fprintf(os.Stderr, "  construct --stack go ~/projects/myapp\n")
-		fmt.Fprintf(os.Stderr, "  construct --stack ui --mcp --port 3000 --port 8080 .\n")
-		fmt.Fprintf(os.Stderr, "  construct --docker dood .\n")
-		fmt.Fprintf(os.Stderr, "  construct --docker dind .\n")
-		fmt.Fprintf(os.Stderr, "  construct --client web .\n\n")
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(constructArgs); err != nil {
-		os.Exit(1)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Bootstrap daemon (except for commands that don't need it).
+	if cmd != "version" {
+		// Check host platform requirements (kernel ≥ 5.12, Docker ≥ 25.0).
+		dockerVer, err := bootstrap.DockerServerVersion(ctx)
+		if err != nil {
+			return fmt.Errorf("connect to Docker: %w", err)
+		}
+		if err := platform.Check(dockerVer); err != nil {
+			return err
+		}
+
+		sockPath, err := bootstrap.EnsureDaemon(ctx, bootstrap.Options{
+			ConstructConfigDir: constructConfigDir,
+			Progress:           os.Stderr,
+		})
+		if err != nil {
+			return fmt.Errorf("daemon bootstrap: %w", err)
+		}
+		globalSocketPath = sockPath
 	}
 
-	tool := tools.Opencode()
+	c := cli.New(globalSocketPath)
+	w := os.Stdout
+	errW := os.Stderr
 
-	if !stacks.IsValid(*stackName) {
-		log.Fatalf("unknown stack %q; supported stacks: %s", *stackName, strings.Join(allStacks, ", "))
-	}
+	switch cmd {
+	case "run":
+		flags := parseRunFlags(args, globalDebug)
+		if flags.Folder == "" {
+			var err error
+			flags.Folder, err = os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working directory: %w", err)
+			}
+		}
+		flags.HostUID = os.Getuid()
+		flags.HostGID = os.Getgid()
+		flags.OpenCodeConfigDir = config.OpenCodeConfigDir()
+		if !flags.NoWeb {
+			flags.Web = true
+		}
+		return c.Run(ctx, flags, w, errW)
 
-	switch *dockerMode {
-	case "none", "dood", "dind":
-		// valid
+	case "qs":
+		var folder string
+		fs := flag.NewFlagSet("qs", flag.ContinueOnError)
+		fs.StringVar(&folder, "folder", "", "folder path")
+		fs.Parse(args) //nolint:errcheck
+		return c.Quickstart(ctx, folder, w, errW)
+
+	case "ls":
+		var jsonOutput bool
+		fs := flag.NewFlagSet("ls", flag.ContinueOnError)
+		fs.BoolVar(&jsonOutput, "json", false, "output as JSON")
+		fs.Parse(args) //nolint:errcheck
+		return c.Ls(ctx, jsonOutput, w)
+
+	case "attach":
+		arg := ""
+		if len(args) > 0 {
+			arg = args[0]
+		}
+		return c.Attach(ctx, arg, w, errW)
+
+	case "stop":
+		arg := ""
+		if len(args) > 0 {
+			arg = args[0]
+		}
+		return c.Stop(ctx, arg, w)
+
+	case "destroy":
+		var force bool
+		var positional string
+		fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
+		fs.BoolVar(&force, "force", false, "skip confirmation")
+		fs.Parse(args) //nolint:errcheck
+		if fs.NArg() > 0 {
+			positional = fs.Arg(0)
+		}
+		return c.Destroy(ctx, positional, force, w, errW)
+
+	case "reset":
+		var force bool
+		var positional string
+		fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+		fs.BoolVar(&force, "force", false, "skip confirmation")
+		fs.Parse(args) //nolint:errcheck
+		if fs.NArg() > 0 {
+			positional = fs.Arg(0)
+		}
+		return c.Reset(ctx, positional, force, w, errW)
+
+	case "logs":
+		var follow bool
+		var tail int
+		var positional string
+		fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+		fs.BoolVar(&follow, "follow", false, "follow log output")
+		fs.BoolVar(&follow, "f", false, "follow log output (shorthand)")
+		fs.IntVar(&tail, "tail", 0, "number of lines to show from end")
+		fs.Parse(args) //nolint:errcheck
+		if fs.NArg() > 0 {
+			positional = fs.Arg(0)
+		}
+		return c.Logs(ctx, positional, follow, tail, w)
+
+	case "config":
+		return runConfigCmd(ctx, c, args, w, errW)
+
 	default:
-		log.Fatalf("unknown docker mode %q; supported modes: none, dood, dind", *dockerMode)
-	}
-
-	switch *client {
-	case "", "tui", "web":
-		// valid
-	default:
-		log.Fatalf("unknown client %q; supported values: tui, web", *client)
-	}
-
-	repoPath := "."
-	if fs.NArg() > 0 {
-		repoPath = fs.Arg(0)
-	}
-	absRepoPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		log.Fatalf("resolve path: %v", err)
-	}
-	if _, err := os.Stat(absRepoPath); os.IsNotExist(err) {
-		log.Fatalf("path does not exist: %s", absRepoPath)
-	}
-
-	// Persist so `construct qs` can replay this invocation.
-	// Pass-through args (after --) are not persisted.
-	if err := config.SaveLastUsed(absRepoPath, *stackName, *mcp, []string(ports), *dockerMode, *servePort, *client); err != nil {
-		log.Printf("warning: could not save last-used settings: %v", err)
-	}
-
-	if err := runner.Run(&runner.Config{
-		Tool:       tool,
-		Stack:      *stackName,
-		RepoPath:   absRepoPath,
-		Rebuild:    *rebuild,
-		Debug:      *debug,
-		Reset:      *reset,
-		MCP:        *mcp,
-		Ports:      []string(ports),
-		DockerMode: *dockerMode,
-		ExtraArgs:  passthroughArgs,
-		ServePort:  *servePort,
-		Client:     *client,
-	}); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("unknown command %q. Run 'construct --help' for usage", cmd)
 	}
 }
 
-// runConfig handles the "construct config" subcommand.
-func runConfig(args []string) {
-	configUsage := func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct config <set|unset|list> [--local] [KEY [VALUE]]\n\n")
-		fmt.Fprintf(os.Stderr, "Commands:\n")
-		fmt.Fprintf(os.Stderr, "  set KEY VALUE   Write or update a credential\n")
-		fmt.Fprintf(os.Stderr, "  unset KEY       Remove a credential\n")
-		fmt.Fprintf(os.Stderr, "  list            Show all configured keys (values are masked)\n\n")
-		fmt.Fprintf(os.Stderr, "Flag (placed after the command name):\n")
-		fmt.Fprintf(os.Stderr, "  --local         Operate on .construct/.env in the current directory\n")
+func runConfigCmd(ctx context.Context, c *cli.CLI, args []string, w, errW *os.File) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: construct config cred <set|unset|list>")
 	}
+	if args[0] != "cred" {
+		return fmt.Errorf("unknown config subcommand %q", args[0])
+	}
+	args = args[1:]
 
 	if len(args) == 0 {
-		configUsage()
-		os.Exit(1)
+		return fmt.Errorf("usage: construct config cred <set|unset|list>")
 	}
 
-	subcmd := args[0]
-	rest := args[1:]
-
-	// Each sub-command gets its own FlagSet so --local can follow the command name.
-	fs := flag.NewFlagSet("construct config "+subcmd, flag.ExitOnError)
-	local := fs.Bool("local", false, "operate on .construct/.env in the current directory instead of ~/.construct/.env")
-	if err := fs.Parse(rest); err != nil {
-		os.Exit(1)
-	}
-
-	envFile, err := targetEnvFile(*local)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	switch subcmd {
+	switch args[0] {
 	case "set":
-		if fs.NArg() < 2 {
-			fmt.Fprintln(os.Stderr, "error: usage: construct config set [--local] KEY VALUE")
-			os.Exit(1)
+		args = args[1:]
+		if len(args) == 0 {
+			return fmt.Errorf("usage: construct config cred set <key> [--folder <path>]")
 		}
-		key, value := fs.Arg(0), fs.Arg(1)
-		if err := config.Set(envFile, key, value); err != nil {
-			log.Fatalf("config set: %v", err)
+		key := args[0]
+		var folder string
+		fs := flag.NewFlagSet("cred-set", flag.ContinueOnError)
+		fs.StringVar(&folder, "folder", "", "store under per-folder scope")
+		fs.Parse(args[1:]) //nolint:errcheck
+
+		// Read value from stdin (hidden).
+		fmt.Fprintf(errW, "Enter value for %s: ", key)
+		reader := bufio.NewReader(os.Stdin)
+		value, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read value: %w", err)
 		}
-		fmt.Printf("Set %s in %s\n", key, envFile)
+		value = strings.TrimRight(value, "\r\n")
+		return c.CredSet(ctx, key, value, folder, w)
 
 	case "unset":
-		if fs.NArg() < 1 {
-			fmt.Fprintln(os.Stderr, "error: usage: construct config unset [--local] KEY")
-			os.Exit(1)
+		args = args[1:]
+		if len(args) == 0 {
+			return fmt.Errorf("usage: construct config cred unset <key> [--folder <path>]")
 		}
-		key := fs.Arg(0)
-		if err := config.Unset(envFile, key); err != nil {
-			log.Fatalf("config unset: %v", err)
-		}
-		fmt.Printf("Unset %s from %s\n", key, envFile)
+		key := args[0]
+		var folder string
+		fs := flag.NewFlagSet("cred-unset", flag.ContinueOnError)
+		fs.StringVar(&folder, "folder", "", "remove from per-folder scope")
+		fs.Parse(args[1:]) //nolint:errcheck
+		return c.CredUnset(ctx, key, folder, w)
 
 	case "list":
-		m, err := config.List(envFile)
-		if err != nil {
-			log.Fatalf("config list: %v", err)
-		}
-		if len(m) == 0 {
-			fmt.Printf("No keys configured in %s\n", envFile)
-			return
-		}
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		fmt.Printf("Keys configured in %s:\n", envFile)
-		for _, k := range keys {
-			fmt.Printf("  %s=****\n", k)
-		}
+		var folder string
+		fs := flag.NewFlagSet("cred-list", flag.ContinueOnError)
+		fs.StringVar(&folder, "folder", "", "include folder-specific credentials")
+		fs.Parse(args[1:]) //nolint:errcheck
+		return c.CredList(ctx, folder, w)
 
 	default:
-		fmt.Fprintf(os.Stderr, "error: unknown config command %q\n", subcmd)
-		configUsage()
-		os.Exit(1)
+		return fmt.Errorf("unknown cred subcommand %q", args[0])
 	}
 }
 
-// targetEnvFile returns the .env path to operate on.
-func targetEnvFile(local bool) (string, error) {
-	if local {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("get working directory: %w", err)
+// parseGlobalFlags strips known global flags from args and returns the rest.
+func parseGlobalFlags(args []string) (rest []string, debug bool, socketPath string, ver bool) {
+	var i int
+	for i < len(args) {
+		arg := args[i]
+		switch {
+		case arg == "--debug" || arg == "-debug":
+			debug = true
+			i++
+		case arg == "--version" || arg == "-version":
+			ver = true
+			i++
+		case strings.HasPrefix(arg, "--daemon-socket="):
+			socketPath = strings.TrimPrefix(arg, "--daemon-socket=")
+			i++
+		case arg == "--daemon-socket" || arg == "-daemon-socket":
+			if i+1 < len(args) {
+				socketPath = args[i+1]
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			rest = append(rest, args[i:]...)
+			return
 		}
-		return config.LocalFile(cwd), nil
 	}
-	return config.GlobalFile()
+	return
 }
 
-// runQuickstart re-runs the last stack recorded for the target repo.
-func runQuickstart(args []string) {
-	qsArgs, passthroughArgs := splitPassthrough(args)
+// parseRunFlags parses flags for the run command.
+func parseRunFlags(args []string, globalDebug bool) cli.RunFlags {
+	var flags cli.RunFlags
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.StringVar(&flags.Folder, "folder", "", "folder path")
+	fs.StringVar(&flags.Tool, "tool", "opencode", "agent tool")
+	fs.StringVar(&flags.Stack, "stack", "base", "stack image")
+	fs.StringVar(&flags.DockerMode, "docker", "none", "docker mode")
+	fs.BoolVar(&flags.Debug, "debug", globalDebug, "drop into shell instead of starting agent")
+	fs.BoolVar(&flags.Web, "web", true, "open web UI in browser")
+	fs.BoolVar(&flags.NoWeb, "no-web", false, "disable auto-open of web UI")
 
-	fs := flag.NewFlagSet("construct qs", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: construct qs [path] [-- <tool-args>]\n\n")
-		fmt.Fprintf(os.Stderr, "Re-runs the last stack used for the given repo (defaults to cwd).\n")
-		fmt.Fprintf(os.Stderr, "Anything after -- is forwarded verbatim to the tool inside the container.\n")
-	}
-	if err := fs.Parse(qsArgs); err != nil {
-		os.Exit(1)
-	}
+	var portFlags multiFlag
+	fs.Var(&portFlags, "port", "publish a container port (repeatable)")
 
-	repoPath := "."
-	if fs.NArg() > 0 {
-		repoPath = fs.Arg(0)
-	}
-	absRepoPath, err := filepath.Abs(repoPath)
-	if err != nil {
-		log.Fatalf("resolve path: %v", err)
-	}
-	if _, err := os.Stat(absRepoPath); os.IsNotExist(err) {
-		log.Fatalf("path does not exist: %s", absRepoPath)
-	}
+	fs.Parse(args) //nolint:errcheck
 
-	last, err := config.LoadLastUsed(absRepoPath)
-	if err != nil {
-		log.Fatalf("qs: load last-used: %v", err)
-	}
-	if last.Stack == "" {
-		log.Fatalf("qs: no previous run recorded for %s", absRepoPath)
-	}
-
-	// Default docker mode for old entries that pre-date the --docker flag.
-	dockerMode := last.DockerMode
-	if dockerMode == "" {
-		dockerMode = "none"
-	}
-
-	// Build the status line showing every flag that will be replayed.
-	statusLine := fmt.Sprintf("construct qs: reusing --stack %s --docker %s", last.Stack, dockerMode)
-	if last.MCP {
-		statusLine += " --mcp"
-	}
-	for _, p := range last.Ports {
-		statusLine += " --port " + p
-	}
-	if last.ServePort != 0 {
-		statusLine += fmt.Sprintf(" --serve-port %d", last.ServePort)
-	}
-	if last.Client != "" {
-		statusLine += " --client " + last.Client
-	}
-	fmt.Fprintln(os.Stderr, statusLine)
-
-	agentArgs := []string{"--stack", last.Stack, "--docker", dockerMode}
-	if last.MCP {
-		agentArgs = append(agentArgs, "--mcp")
-	}
-	for _, p := range last.Ports {
-		agentArgs = append(agentArgs, "--port", p)
-	}
-	if last.ServePort != 0 {
-		agentArgs = append(agentArgs, "--serve-port", fmt.Sprintf("%d", last.ServePort))
-	}
-	if last.Client != "" {
-		agentArgs = append(agentArgs, "--client", last.Client)
-	}
-	agentArgs = append(agentArgs, absRepoPath)
-	// Pass-through args are appended after -- so runAgent's splitPassthrough
-	// correctly routes them to runner.Config.ExtraArgs (and they are not saved
-	// to last-used, preserving the original session-resuming semantics).
-	if len(passthroughArgs) > 0 {
-		agentArgs = append(agentArgs, "--")
-		agentArgs = append(agentArgs, passthroughArgs...)
-	}
-	runAgent(agentArgs)
+	flags.Ports = []string(portFlags)
+	return flags
 }
+
+// multiFlag is a flag.Value that collects repeated string flags.
+type multiFlag []string
+
+func (f *multiFlag) String() string     { return strings.Join(*f, ",") }
+func (f *multiFlag) Set(v string) error { *f = append(*f, v); return nil }
