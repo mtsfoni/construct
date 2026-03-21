@@ -103,7 +103,13 @@ func runCLI() error {
 
 	switch cmd {
 	case "run":
-		flags := parseRunFlags(args, globalDebug)
+		flags, err := parseRunFlags(args, globalDebug)
+		if err == flag.ErrHelp {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		if flags.Folder == "" {
 			var err error
 			flags.Folder, err = os.Getwd()
@@ -278,7 +284,7 @@ func parseGlobalFlags(args []string) (rest []string, debug bool, socketPath stri
 }
 
 // parseRunFlags parses flags for the run command.
-func parseRunFlags(args []string, globalDebug bool) cli.RunFlags {
+func parseRunFlags(args []string, globalDebug bool) (cli.RunFlags, error) {
 	var flags cli.RunFlags
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.StringVar(&flags.Folder, "folder", "", "folder path")
@@ -292,14 +298,16 @@ func parseRunFlags(args []string, globalDebug bool) cli.RunFlags {
 	var portFlags multiFlag
 	fs.Var(&portFlags, "port", "publish a container port (repeatable)")
 
-	fs.Parse(args) //nolint:errcheck
+	if err := fs.Parse(args); err != nil {
+		return cli.RunFlags{}, err
+	}
 
 	flags.Ports = []string(portFlags)
 	// A bare positional argument is treated as the folder path.
 	if flags.Folder == "" && fs.NArg() > 0 {
 		flags.Folder = fs.Arg(0)
 	}
-	return flags
+	return flags, nil
 }
 
 // multiFlag is a flag.Value that collects repeated string flags.
