@@ -1,5 +1,6 @@
-// Package tools describes the supported agent tools: install commands,
-// invoke commands, web UI ports, and related constants.
+// Package tools describes the supported agent tools: invoke commands, web UI
+// ports, and related constants. opencode is baked into the stack image and
+// does not require a runtime install step.
 package tools
 
 // Tool names.
@@ -13,17 +14,6 @@ const DefaultTool = ToolOpencode
 // WebPort is the port opencode binds its web server to inside the container.
 const WebPort = 4096
 
-// InstallCommand returns the shell command used to install a tool into the
-// agent layer. The command is run via docker exec inside the container.
-func InstallCommand(tool string) string {
-	switch tool {
-	case ToolOpencode:
-		return "npm install -g opencode-ai"
-	default:
-		return ""
-	}
-}
-
 // InvokeCommand returns the command used to start the tool in yolo mode.
 // port is the container-side port the tool should bind to.
 func InvokeCommand(tool string, port int) []string {
@@ -35,11 +25,11 @@ func InvokeCommand(tool string, port int) []string {
 	}
 }
 
-// BinaryPath returns the expected path of the tool binary inside the agent layer.
+// BinaryPath returns the expected path of the tool binary inside the image.
 func BinaryPath(tool string) string {
 	switch tool {
 	case ToolOpencode:
-		return "/agent/bin/opencode"
+		return "/usr/local/bin/opencode"
 	default:
 		return ""
 	}

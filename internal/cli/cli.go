@@ -7,12 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/docker/docker/api/types/container"
+	dockerimage "github.com/docker/docker/api/types/image"
+	dockervolume "github.com/docker/docker/api/types/volume"
+	dockerclient "github.com/docker/docker/client"
 
 	"github.com/construct-run/construct/internal/client"
 	"github.com/construct-run/construct/internal/config"
@@ -48,6 +54,7 @@ type RunFlags struct {
 	HostUID           int
 	HostGID           int
 	OpenCodeConfigDir string
+	OpenCodeDataDir   string
 }
 
 // Run starts or attaches to a session.
@@ -67,6 +74,7 @@ func (c *CLI) Run(ctx context.Context, flags RunFlags, w io.Writer, errW io.Writ
 		"host_uid":            flags.HostUID,
 		"host_gid":            flags.HostGID,
 		"opencode_config_dir": flags.OpenCodeConfigDir,
+		"opencode_data_dir":   flags.OpenCodeDataDir,
 	}
 
 	var result map[string]interface{}
@@ -100,13 +108,6 @@ func (c *CLI) Run(ctx context.Context, flags RunFlags, w io.Writer, errW io.Writ
 	}
 
 	webURL, _ := result["web_url"].(string)
-	if webURL != "" {
-		fmt.Fprintf(w, "Web UI: %s\n", webURL)
-
-		if !flags.NoWeb && flags.Web {
-			openBrowser(webURL)
-		}
-	}
 
 	if flags.Debug {
 		// Debug mode requires an interactive terminal (it drops into a shell).
@@ -127,19 +128,26 @@ func (c *CLI) Run(ctx context.Context, flags RunFlags, w io.Writer, errW io.Writ
 		return execDockerShell(containerName)
 	}
 
-	// Stream logs until Ctrl-C.
 	tui, _ := result["tui_hint"].(string)
+
+	if webURL != "" {
+		fmt.Fprintf(errW, "Waiting for agent...")
+		if err := waitForURL(ctx, webURL, 60*time.Second); err != nil {
+			fmt.Fprintf(errW, "\nWarning: agent did not become ready: %v\n", err)
+		} else {
+			fmt.Fprintf(errW, " ready.\n")
+			fmt.Fprintf(w, "Web UI: %s\n", webURL)
+			if !flags.NoWeb && flags.Web {
+				openBrowser(webURL)
+			}
+		}
+	}
+
 	if tui != "" {
 		fmt.Fprintf(w, "Attach TUI: %s\n", tui)
 	}
-	fmt.Fprintf(w, "Streaming logs (Ctrl-C to detach)...\n")
 
-	sess, ok := result["session"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	repo, _ := sess["repo"].(string)
-	return c.streamLogs(ctx, "", repo, true, 0, w)
+	return nil
 }
 
 // Attach connects to an existing session.
@@ -193,6 +201,7 @@ func (c *CLI) Attach(ctx context.Context, sessionIDOrFolder string, w io.Writer,
 		HostUID:           os.Getuid(),
 		HostGID:           os.Getgid(),
 		OpenCodeConfigDir: config.OpenCodeConfigDir(),
+		OpenCodeDataDir:   config.OpenCodeDataDir(),
 		Web:               true,
 	}
 	return c.Run(ctx, flags, w, errW)
@@ -232,6 +241,7 @@ func (c *CLI) Quickstart(ctx context.Context, folder string, w io.Writer, errW i
 		HostUID:           os.Getuid(),
 		HostGID:           os.Getgid(),
 		OpenCodeConfigDir: config.OpenCodeConfigDir(),
+		OpenCodeDataDir:   config.OpenCodeDataDir(),
 	}
 	return c.Run(ctx, flags, w, errW)
 }
@@ -348,41 +358,6 @@ func (c *CLI) Destroy(ctx context.Context, sessionIDOrFolder string, force bool,
 	}
 
 	fmt.Fprintf(w, "Session for %s destroyed.\n", displayName)
-	return nil
-}
-
-// Reset resets a session's agent layer.
-func (c *CLI) Reset(ctx context.Context, sessionIDOrFolder string, force bool, w io.Writer, errW io.Writer) error {
-	id, repo, err := c.resolveToIDAndRepo(ctx, sessionIDOrFolder)
-	if err != nil {
-		return err
-	}
-
-	displayName := repo
-	if displayName == "" {
-		displayName = id
-	}
-
-	if !force {
-		fmt.Fprintf(errW, "Reset session for %s? Agent-installed tools will be lost. Auth and global config are not affected. [y/N] ", displayName)
-		reader := bufio.NewReader(os.Stdin)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		if answer != "y" && answer != "yes" {
-			fmt.Fprintln(w, "Aborted.")
-			return nil
-		}
-	}
-
-	_, err = c.client.Do(ctx, "session.reset", map[string]interface{}{
-		"session_id": id,
-		"repo":       repo,
-	})
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(w, "Session for %s reset. Agent layer cleared; session is now running.\n", displayName)
 	return nil
 }
 
@@ -677,4 +652,132 @@ func execDockerShell(containerName string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// --- purge ---
+
+// Purge removes all construct Docker resources (containers, volumes, images)
+// and the daemon state directory. Auth credentials are preserved (R-LIFE-5).
+// It operates directly against the Docker daemon — no construct daemon needed.
+func Purge(ctx context.Context, constructConfigDir string, force bool, w io.Writer, errW io.Writer) error {
+	if !force {
+		fmt.Fprint(errW, "Purge all construct containers, volumes, and images? This cannot be undone. [y/N] ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(w, "Aborted.")
+			return nil
+		}
+	}
+
+	dc, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("connect to Docker: %w", err)
+	}
+	defer dc.Close() //nolint:errcheck
+
+	var removedContainers, removedVolumes, removedImages int
+
+	// --- containers ---
+	containers, err := dc.ContainerList(ctx, container.ListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("list containers: %w", err)
+	}
+	for _, c := range containers {
+		for _, name := range c.Names {
+			// Docker prefixes names with "/"
+			trimmed := strings.TrimPrefix(name, "/")
+			if strings.HasPrefix(trimmed, "construct-") {
+				fmt.Fprintf(w, "Removing container %s...\n", trimmed)
+				_ = dc.ContainerStop(ctx, c.ID, container.StopOptions{})
+				if err := dc.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+					fmt.Fprintf(errW, "warning: remove container %s: %v\n", trimmed, err)
+				} else {
+					removedContainers++
+				}
+				break
+			}
+		}
+	}
+
+	// --- volumes ---
+	volumeList, err := dc.VolumeList(ctx, dockervolume.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list volumes: %w", err)
+	}
+	for _, v := range volumeList.Volumes {
+		if strings.HasPrefix(v.Name, "construct-") {
+			fmt.Fprintf(w, "Removing volume %s...\n", v.Name)
+			if err := dc.VolumeRemove(ctx, v.Name, true); err != nil {
+				fmt.Fprintf(errW, "warning: remove volume %s: %v\n", v.Name, err)
+			} else {
+				removedVolumes++
+			}
+		}
+	}
+
+	// --- images ---
+	imageList, err := dc.ImageList(ctx, dockerimage.ListOptions{All: false})
+	if err != nil {
+		return fmt.Errorf("list images: %w", err)
+	}
+	for _, img := range imageList {
+		for _, tag := range img.RepoTags {
+			repo := strings.SplitN(tag, ":", 2)[0]
+			if strings.HasPrefix(repo, "construct-") {
+				fmt.Fprintf(w, "Removing image %s...\n", tag)
+				if _, err := dc.ImageRemove(ctx, img.ID, dockerimage.RemoveOptions{Force: true}); err != nil {
+					fmt.Fprintf(errW, "warning: remove image %s: %v\n", tag, err)
+				} else {
+					removedImages++
+				}
+				break
+			}
+		}
+	}
+
+	// --- state dirs (sessions + quickstart; credentials preserved) ---
+	for _, subdir := range []string{"sessions", "quickstart"} {
+		dir := filepath.Join(constructConfigDir, subdir)
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(errW, "warning: remove %s: %v\n", dir, err)
+		}
+	}
+	// Remove daemon state file so stale session records don't persist.
+	stateFile := filepath.Join(constructConfigDir, "daemon-state.json")
+	if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(errW, "warning: remove daemon-state.json: %v\n", err)
+	}
+
+	fmt.Fprintf(w, "Purge complete: %d container(s), %d volume(s), %d image(s) removed.\n",
+		removedContainers, removedVolumes, removedImages)
+	fmt.Fprintln(w, "Auth credentials preserved. Run 'construct run' to start fresh.")
+	return nil
+}
+
+// waitForURL polls url with HTTP GET every 250 ms until it responds with any
+// status code, or the timeout elapses. The session keeps running regardless.
+func waitForURL(ctx context.Context, url string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	hc := &http.Client{Timeout: 2 * time.Second}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := hc.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }

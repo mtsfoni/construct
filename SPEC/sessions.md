@@ -1,6 +1,6 @@
 # construct — Sessions Spec
 
-Covers R-SES-1 through R-SES-8, R-LIFE-1 through R-LIFE-5, R-OBS-3.
+Covers R-SES-1 through R-SES-8, R-LIFE-1 through R-LIFE-4, R-LIFE-5, R-OBS-3.
 
 ---
 
@@ -48,9 +48,6 @@ per folder, R-SES-3).
          └─────────┘
 ```
 
-`reset` is a special transition: stopped → (image-reset) → running.
-It is only available from a running or stopped state (not destroyed).
-
 ---
 
 ## Session creation (`session.start`)
@@ -68,6 +65,7 @@ It is only available from a running or stopped state (not destroyed).
 | `host_uid` | int | yes | — | Host user's UID (from CLI) |
 | `host_gid` | int | yes | — | Host user's GID (from CLI) |
 | `opencode_config_dir` | string | yes | — | Resolved host opencode config path (from CLI) |
+| `opencode_data_dir` | string | yes | — | Resolved host opencode data path (from CLI) |
 
 ### Behaviour
 
@@ -95,22 +93,22 @@ It is only available from a running or stopped state (not destroyed).
       For example, if `docker create` succeeds but `docker start` fails, the
       daemon removes the container, then the dind sidecar and network (if dind
       mode), then the volume.
-   j. If tool not installed in container: run the tool install command via
-      `docker exec` (see `SPEC/tools.md`).
-   k. Start the agent process (see "Agent process launch" below) or shell if `debug`.
-   l. Register the session in the registry with `status: running`.
-   m. Save quickstart record for the folder (written by daemon, see "Quickstart
-      persistence" below).
-   n. Return session record + connection info to client.
+   j. Start the agent process (see "Agent process launch" below) or shell if `debug`.
+   k. Register the session in the registry with `status: running`.
+   l. Save quickstart record for the folder (written by daemon, see "Quickstart
+       persistence" below).
+   m. Return session record + connection info to client.
 3. **Existing session, same tool/stack/docker:**
    a. If `status: stopped`: start the container (`docker start`). If
       `docker_mode = dind`, also start the dind sidecar (`docker start
       construct-dind-<short-id>`). Regenerate `construct-agents.md`, start the
-      agent process, set `status: running`, return connection info. Use the
-      stored `host_uid`, `host_gid`, and `opencode_config_dir` from the session
-      record. If the CLI sends different values, log a warning but use the
-      stored values (the container was created with the original UID/GID mapping
-      and cannot be changed without recreating).
+    agent process, set `status: running`, return connection info. Use the
+       stored `opencode_config_dir` and `opencode_data_dir` from the session
+       record. If the CLI sends different values for `host_uid` or `host_gid`
+       (e.g. because the user changed), the daemon recreates the container with
+       the new UID/GID: it removes the existing container (`docker rm`), then
+       creates a fresh one with the updated `User` field before starting the
+       agent. The agent layer volume is preserved across this recreation.
    b. If `status: running`: return connection info (pure attach; no changes).
 4. **Existing session, different tool/stack/docker/debug:**
    - Return the existing session's connection info with a warning that the
@@ -142,10 +140,12 @@ The container's entrypoint is a long-running process (`sleep infinity` — see
 container's PID 1. Instead, the daemon launches the agent as a background exec:
 
 ```
-docker exec -d <container> opencode --yolo --port <web-port>
+docker exec -d <container> opencode serve --hostname 0.0.0.0 --port <web-port>
 ```
 
-The `--port` flag tells opencode which port to bind its web server to. The
+The `--hostname 0.0.0.0` flag is required so opencode binds to all interfaces
+(not just loopback) inside the container, making its web server reachable from
+the host. The `--port` flag tells opencode which port to bind its web server to. The
 `<web-port>` is the container-side port (always 4096 for opencode; the
 host-side mapping is handled by Docker's port publishing). The command uses
 `opencode` (not an absolute path) because `/agent/bin` is on `PATH` and
@@ -160,17 +160,27 @@ the entire container.
 
 - The container must stay alive independently of the agent process. The
   entrypoint (`sleep infinity`) keeps the container running so that
-  `session.reset` can kill the agent, replace the volume, and start a new
-  agent — all without recreating the container.
+  `session.stop` can kill the agent without stopping the container, and
+  `session.start` can restart it without recreating the container.
 - `session.stop` first terminates the agent process (SIGTERM/SIGKILL), then
   stops the container. The two-step approach ensures clean agent shutdown.
 - Debug mode replaces the exec with an interactive shell (see below).
 
-### Agent stdout/stderr capture
+### Agent log capture
 
-The daemon attaches to the exec's stdout/stderr streams (via the Docker SDK's
-`ContainerExecAttach`) and feeds them into the per-session log buffer. This is
-the source of data for `session.logs`.
+The daemon captures the agent's log output by running a `tail -n +0 -f
+<log-path>` exec inside the container and piping its output into the
+per-session log buffer. The log path for opencode is
+`/agent/home/.local/share/opencode/opencode.log`.
+
+This exec is separate from the agent exec itself — it is started immediately
+after the agent exec, attached to stdout/stderr (via the Docker SDK's
+`ContainerExecAttach`), and runs until the session stops or the daemon
+restarts. The agent exec itself is started with `AttachStdout: false` (fully
+detached) so the daemon does not hold a reference to the agent exec's output
+streams directly.
+
+This is the source of data for `session.logs`.
 
 ---
 
@@ -249,23 +259,10 @@ If the session is stopped, `session.start` restarts it using the saved settings
 
 ---
 
-## Session reset (`session.reset`)
+## Session reset (`session.reset`) — REMOVED
 
-Reset loses agent-installed tools but preserves auth and global config (R-LIFE-5).
-The quickstart record is not updated by reset (it already reflects the correct
-settings from the original session creation).
-
-1. If `status: running`: stop the agent process and the container (same as stop).
-2. Call `docker volume rm construct-layer-<short-id>`.
-3. Create a fresh empty volume: `docker volume create construct-layer-<short-id>`.
-4. Regenerate the `construct-agents.md` file (in case ports or mode changed — 
-   though they don't change, this ensures the file is always fresh).
-5. Restart the container (same as `docker start <container>`; the container
-   definition was not changed).
-6. Run the tool install command again (same as first-time setup, since the agent
-   layer is now empty).
-7. Start the agent process.
-8. Set `status: running`.
+Reset has been replaced by `construct purge` (R-LIFE-5). Use `construct destroy`
+to remove a single session and `construct purge` to wipe all construct state.
 
 ---
 
@@ -275,21 +272,6 @@ Each session has an independent container and agent layer volume with a unique n
 Sessions do not share any Docker resources. The daemon manages them all concurrently.
 The only shared resource is the host Docker daemon (socket), which Docker handles
 with its own concurrency.
-
----
-
-## Tool installation inside the container
-
-After container creation (or after reset), the daemon checks whether the tool
-binary is present in the container. If not (or always on a fresh agent layer), it
-runs the tool's install command.
-
-The install command runs inside the container as a `docker exec`. It installs into
-a path on the agent layer volume (e.g. `/agent/bin`), which is added to `PATH`
-in the container's environment. This ensures the tool persists across container
-restarts and survives stack image rebuilds (R-LIFE-4).
-
-See `SPEC/tools.md` for per-tool install commands.
 
 ---
 

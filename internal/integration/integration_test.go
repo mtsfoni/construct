@@ -508,57 +508,6 @@ func TestIntegration_SessionManagerLifecycle(t *testing.T) {
 	}
 }
 
-// TestIntegration_SessionManagerReset verifies that reset recreates the agent volume.
-func TestIntegration_SessionManagerReset(t *testing.T) {
-	skipWithoutDocker(t)
-	ctx := context.Background()
-	cli := newDockerClient(t)
-	ensureBaseImage(t, ctx, cli)
-
-	stateDir := t.TempDir()
-	reg := registry.New(filepath.Join(stateDir, "daemon-state.json"))
-	authStore := auth.NewStore(stateDir)
-	qsStore := quickstart.NewStore(filepath.Join(stateDir, "quickstart"))
-	mgr := session.NewManager(cli, reg, authStore, qsStore, stateDir)
-
-	repo := t.TempDir()
-	p := session.StartParams{
-		Repo:              repo,
-		Tool:              tools.ToolOpencode,
-		Stack:             stacks.StackBase,
-		DockerMode:        "none",
-		Debug:             true,
-		HostUID:           os.Getuid(),
-		HostGID:           os.Getgid(),
-		OpenCodeConfigDir: t.TempDir(),
-	}
-
-	res, err := mgr.Start(ctx, p, nil)
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	t.Cleanup(func() { _ = mgr.Destroy(context.Background(), res.Session.ID) })
-
-	// Write a sentinel file to the agent layer.
-	code, _ := execAndWait(t, ctx, cli, res.Session.ContainerName, []string{
-		"/bin/sh", "-c", "echo sentinel > /agent/sentinel.txt",
-	})
-	if code != 0 {
-		t.Fatalf("write sentinel: exit code %d", code)
-	}
-
-	// Reset.
-	if _, err := mgr.Reset(ctx, res.Session.ID); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-
-	// Sentinel should be gone (new empty volume).
-	code, _ = execAndWait(t, ctx, cli, res.Session.ContainerName, []string{"test", "-f", "/agent/sentinel.txt"})
-	if code == 0 {
-		t.Error("expected sentinel file to be gone after reset")
-	}
-}
-
 // TestIntegration_DaemonSocket verifies that the daemon server starts, the
 // socket is connectable, and session.start / session.stop work end-to-end.
 func TestIntegration_DaemonSocket(t *testing.T) {

@@ -38,6 +38,7 @@ type Session struct {
 	HostUID           int           `json:"host_uid"`
 	HostGID           int           `json:"host_gid"`
 	OpenCodeConfigDir string        `json:"opencode_config_dir"`
+	OpenCodeDataDir   string        `json:"opencode_data_dir"`
 	Status            Status        `json:"status"`
 	CreatedAt         time.Time     `json:"created_at"`
 	StartedAt         *time.Time    `json:"started_at,omitempty"`

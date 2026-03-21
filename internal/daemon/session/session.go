@@ -1,5 +1,5 @@
 // Package session implements session lifecycle logic: create, attach, stop,
-// destroy, and reset. It drives the Docker client and registry to manage
+// and destroy. It drives the Docker client and registry to manage
 // session containers.
 package session
 
@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -48,6 +49,7 @@ type StartParams struct {
 	HostUID           int
 	HostGID           int
 	OpenCodeConfigDir string
+	OpenCodeDataDir   string
 }
 
 // StartResult is the response from session.start.
@@ -63,7 +65,12 @@ type ProgressFn func(msg string)
 
 // Manager owns all session lifecycle logic and coordinates docker, registry,
 // auth, logbuffer, and quickstart.
+// Manager manages the lifecycle of all sessions. All exported methods are
+// safe for concurrent use.
+//
+// mu protects logBuffers, execIDs, and tailExecIDs.
 type Manager struct {
+	mu            sync.Mutex
 	docker        dockeriface.Client
 	reg           *registry.Registry
 	authStore     *auth.Store
@@ -126,11 +133,15 @@ func (m *Manager) newLogBuffer() *logbuffer.Buffer {
 
 // LogBuffer returns the log buffer for a session, or nil if not found.
 func (m *Manager) LogBuffer(sessionID string) *logbuffer.Buffer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.logBuffers[sessionID]
 }
 
 // InjectLogBuffer sets a log buffer for a session. Intended for testing only.
 func (m *Manager) InjectLogBuffer(sessionID string, buf *logbuffer.Buffer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.logBuffers[sessionID] = buf
 }
 
@@ -148,18 +159,14 @@ func (m *Manager) AttachLogStream(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("session %s not found", sessionID)
 	}
 
+	m.mu.Lock()
 	buf := m.logBuffers[s.ID]
 	if buf == nil {
 		buf = m.newLogBuffer()
 		m.logBuffers[s.ID] = buf
 	}
+	m.mu.Unlock()
 
-	// Re-exec a tail of the agent's stdout by attaching a new exec that reads
-	// from the agent process's log file (if any) or, more practically, creates
-	// a lightweight exec that streams the container's stdout going forward.
-	// Since we cannot re-attach an existing exec after daemon restart, we start
-	// a fresh exec that tails the agent log path if available, or silently
-	// initialises an empty buffer so `construct logs` works without crashing.
 	logPath := tools.LogPath(s.Tool)
 	if logPath == "" {
 		// Tool doesn't support a log file — buffer stays empty but valid.
@@ -180,7 +187,9 @@ func (m *Manager) AttachLogStream(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("attach log-tail exec: %w", err)
 	}
 
+	m.mu.Lock()
 	m.tailExecIDs[s.ID] = execResp.ID
+	m.mu.Unlock()
 
 	go streamOutput(attachResp.Reader, buf)
 
@@ -229,7 +238,30 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 		}, nil
 	}
 
-	// Stopped — restart
+	// Stopped — restart.
+	// If the caller's UID/GID changed since the container was created (e.g. the
+	// session was created by a different user or before UID mapping was
+	// implemented), recreate the container so the new User field takes effect.
+	// Docker bakes User into the container at creation time; it cannot be
+	// changed on an existing container.
+	if p.HostUID != s.HostUID || p.HostGID != s.HostGID {
+		if progress != nil {
+			progress("UID/GID changed — recreating session container...")
+		}
+		volumeName := fmt.Sprintf("construct-layer-%s", s.ShortID())
+		if err := m.docker.ContainerRemove(ctx, s.ContainerName, container.RemoveOptions{Force: true}); err != nil {
+			return nil, fmt.Errorf("remove container for uid/gid update: %w", err)
+		}
+		s.HostUID = p.HostUID
+		s.HostGID = p.HostGID
+		if err := m.reg.Update(s); err != nil {
+			return nil, fmt.Errorf("update session uid/gid: %w", err)
+		}
+		if err := m.createContainer(ctx, s, volumeName); err != nil {
+			return nil, fmt.Errorf("recreate container for uid/gid update: %w", err)
+		}
+	}
+
 	if progress != nil {
 		progress("Restarting session container...")
 	}
@@ -246,13 +278,6 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 	sessionDir := m.sessionDir(s.ShortID())
 	if err := config.WriteAgentsMD(sessionDir, agentsParams(s)); err != nil {
 		return nil, fmt.Errorf("write agents.md: %w", err)
-	}
-
-	if progress != nil {
-		progress("Checking tool installation...")
-	}
-	if err := m.ensureToolInstalled(ctx, s, progress); err != nil {
-		return nil, fmt.Errorf("install tool: %w", err)
 	}
 
 	if !s.Debug {
@@ -323,6 +348,7 @@ func (m *Manager) createNew(ctx context.Context, p StartParams, progress Progres
 		HostUID:           p.HostUID,
 		HostGID:           p.HostGID,
 		OpenCodeConfigDir: p.OpenCodeConfigDir,
+		OpenCodeDataDir:   p.OpenCodeDataDir,
 		Status:            registry.StatusRunning,
 		CreatedAt:         now,
 		StartedAt:         &now,
@@ -368,14 +394,6 @@ func (m *Manager) createNew(ctx context.Context, p StartParams, progress Progres
 		return nil, fmt.Errorf("start container: %w", err)
 	}
 
-	if progress != nil {
-		progress(fmt.Sprintf("Installing %s...", p.Tool))
-	}
-	if err := m.ensureToolInstalled(ctx, s, progress); err != nil {
-		m.cleanupOnFailure(ctx, s, volumeName, sessionDir)
-		return nil, fmt.Errorf("install tool: %w", err)
-	}
-
 	if !p.Debug {
 		if progress != nil {
 			progress("Starting agent process...")
@@ -391,7 +409,6 @@ func (m *Manager) createNew(ctx context.Context, p StartParams, progress Progres
 		return nil, fmt.Errorf("register session: %w", err)
 	}
 
-	m.logBuffers[s.ID] = m.newLogBuffer()
 	m.saveQuickstart(s)
 
 	return &StartResult{
@@ -411,12 +428,15 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) (*registry.Session
 		return s, nil
 	}
 
-	if execID, ok := m.execIDs[s.ID]; ok {
-		_ = m.killAgentExec(ctx, s.ContainerName, execID)
-		delete(m.execIDs, s.ID)
-	}
-	// The tail exec will terminate naturally when the container stops.
+	m.mu.Lock()
+	execID, hasExec := m.execIDs[s.ID]
+	delete(m.execIDs, s.ID)
 	delete(m.tailExecIDs, s.ID)
+	m.mu.Unlock()
+
+	if hasExec {
+		_ = m.killAgentExec(ctx, s.ContainerName, execID)
+	}
 
 	timeout := 30
 	if err := m.docker.ContainerStop(ctx, s.ContainerName, container.StopOptions{Timeout: &timeout}); err != nil {
@@ -466,81 +486,17 @@ func (m *Manager) Destroy(ctx context.Context, sessionID string) error {
 	sessionDir := m.sessionDir(shortID)
 	_ = os.RemoveAll(sessionDir)
 
+	m.mu.Lock()
 	delete(m.logBuffers, s.ID)
 	delete(m.execIDs, s.ID)
 	delete(m.tailExecIDs, s.ID)
+	m.mu.Unlock()
 
 	if err := m.reg.Remove(s.ID); err != nil {
 		return fmt.Errorf("remove from registry: %w", err)
 	}
 	_ = m.qsStore.Delete(s.Repo)
 	return nil
-}
-
-// Reset wipes the agent layer and restarts the session fresh.
-func (m *Manager) Reset(ctx context.Context, sessionID string) (*registry.Session, error) {
-	s := m.reg.GetByID(sessionID)
-	if s == nil {
-		return nil, fmt.Errorf("session %s not found", sessionID)
-	}
-
-	shortID := s.ShortID()
-	volumeName := fmt.Sprintf("construct-layer-%s", shortID)
-
-	if s.Status == registry.StatusRunning {
-		if _, err := m.Stop(ctx, sessionID); err != nil {
-			return nil, fmt.Errorf("stop session: %w", err)
-		}
-	}
-
-	// Remove the container so we can recreate it with the new empty volume.
-	// Docker bakes volume mount specs into the container at creation time, so
-	// simply removing and recreating the volume is not enough — the old volume
-	// ID is still referenced in the container config.
-	if err := m.docker.ContainerRemove(ctx, s.ContainerName, container.RemoveOptions{Force: true}); err != nil {
-		return nil, fmt.Errorf("remove container for reset: %w", err)
-	}
-
-	_ = m.docker.VolumeRemove(ctx, volumeName, true)
-	if _, err := m.docker.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName}); err != nil {
-		return nil, fmt.Errorf("create fresh volume: %w", err)
-	}
-
-	sessionDir := m.sessionDir(shortID)
-	if err := config.WriteAgentsMD(sessionDir, agentsParams(s)); err != nil {
-		return nil, fmt.Errorf("write agents.md: %w", err)
-	}
-
-	// Recreate the container with the fresh volume.
-	if err := m.createContainer(ctx, s, volumeName); err != nil {
-		return nil, fmt.Errorf("recreate container: %w", err)
-	}
-
-	if err := m.docker.ContainerStart(ctx, s.ContainerName, container.StartOptions{}); err != nil {
-		return nil, fmt.Errorf("start container: %w", err)
-	}
-	if s.DockerMode == "dind" {
-		dindName := netpkg.DindContainerName(shortID)
-		_ = m.docker.ContainerStart(ctx, dindName, container.StartOptions{})
-	}
-
-	if err := m.ensureToolInstalled(ctx, s, nil); err != nil {
-		return nil, fmt.Errorf("install tool: %w", err)
-	}
-
-	if !s.Debug {
-		if err := m.startAgent(ctx, s); err != nil {
-			return nil, fmt.Errorf("start agent: %w", err)
-		}
-	}
-
-	now := time.Now().UTC()
-	if err := m.reg.UpdateStatus(s.ID, registry.StatusRunning, &now, nil); err != nil {
-		return nil, fmt.Errorf("update status: %w", err)
-	}
-	s.Status = registry.StatusRunning
-	s.StartedAt = &now
-	return s, nil
 }
 
 // List returns all sessions.
@@ -623,15 +579,12 @@ func (m *Manager) ensureStackImage(ctx context.Context, stackName, imageName str
 func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volumeName string) error {
 	shortID := s.ShortID()
 
-	// Volume and idmap-bind mounts go in Mounts.
+	// Volume and bind mounts go in Mounts.
 	// Credential and config bind mounts use HostConfig.Binds with :z SELinux
 	// relabeling so they work on Fedora/RHEL hosts with SELinux enforcing.
 	mounts := []mount.Mount{
 		{Type: mount.TypeVolume, Source: volumeName, Target: "/agent"},
 		{
-			// The idmap (UID/GID mapping) for this bind mount is injected by
-			// ContainerCreateWithIDMap, which extends the BindOptions JSON with
-			// an IDMapping field not present in the Go SDK's mount.BindOptions.
 			Type:   mount.TypeBind,
 			Source: s.Repo,
 			Target: s.Repo,
@@ -644,11 +597,12 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 	// :z relabels the bind mount for SELinux (shared label), required on
 	// Fedora/RHEL with SELinux enforcing. The Mounts struct has no such field.
 	binds := []string{
-		s.OpenCodeConfigDir + ":" + s.OpenCodeConfigDir + ":ro,z",
+		s.OpenCodeConfigDir + ":" + s.OpenCodeConfigDir + ":z",
+		s.OpenCodeDataDir + ":" + s.OpenCodeDataDir + ":z",
 		m.hostGlobalCredDir() + ":/run/construct/creds/global:ro,z",
 		m.hostFolderCredDir(s.Repo) + ":/run/construct/creds/folder:ro,z",
 		filepath.Join(m.hostSessionDir(shortID), "construct-agents.md") +
-			":/agent/home/.config/opencode/construct-agents.md:ro,z",
+			":/run/construct/agents.md:ro,z",
 	}
 
 	if s.DockerMode == "dood" {
@@ -680,6 +634,7 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 
 	cfg := &container.Config{
 		Image:        stacks.ImageName(s.Stack),
+		User:         fmt.Sprintf("%d:%d", s.HostUID, s.HostGID),
 		Env:          env,
 		ExposedPorts: nat.PortSet(exposedPorts),
 	}
@@ -694,16 +649,10 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 		hostCfg.SecurityOpt = []string{"label=disable"}
 	}
 
-	idmap := dockeriface.IDMapping{
-		UIDMappings: []dockeriface.IDMap{{ContainerID: 0, HostID: uint32(s.HostUID), Size: 1}},
-		GIDMappings: []dockeriface.IDMap{{ContainerID: 0, HostID: uint32(s.HostGID), Size: 1}},
-	}
-	_, err := m.docker.ContainerCreateWithIDMap(
+	_, err := m.docker.ContainerCreate(
 		ctx, cfg, hostCfg, networkConfig,
 		&specs.Platform{OS: "linux"},
 		s.ContainerName,
-		s.Repo, s.Repo,
-		idmap,
 	)
 	return err
 }
@@ -743,47 +692,6 @@ func (m *Manager) createDind(ctx context.Context, s *registry.Session) error {
 	return nil
 }
 
-func (m *Manager) ensureToolInstalled(ctx context.Context, s *registry.Session, progress ProgressFn) error {
-	checkResp, err := m.docker.ContainerExecCreate(ctx, s.ContainerName, container.ExecOptions{
-		Cmd: []string{"test", "-f", tools.BinaryPath(s.Tool)},
-	})
-	if err == nil {
-		m.docker.ContainerExecStart(ctx, checkResp.ID, container.ExecStartOptions{})
-		if inspect, err := m.docker.ContainerExecInspect(ctx, checkResp.ID); err == nil && inspect.ExitCode == 0 {
-			return nil
-		}
-	}
-
-	if progress != nil {
-		progress(fmt.Sprintf("Installing %s (this may take a moment)...", s.Tool))
-	}
-
-	installCmd := tools.InstallCommand(s.Tool)
-	execResp, err := m.docker.ContainerExecCreate(ctx, s.ContainerName, container.ExecOptions{
-		Cmd: []string{"/bin/sh", "-c", installCmd},
-	})
-	if err != nil {
-		return fmt.Errorf("create install exec: %w", err)
-	}
-	if err := m.docker.ContainerExecStart(ctx, execResp.ID, container.ExecStartOptions{}); err != nil {
-		return fmt.Errorf("start install exec: %w", err)
-	}
-	for i := 0; i < 120; i++ {
-		time.Sleep(500 * time.Millisecond)
-		inspect, err := m.docker.ContainerExecInspect(ctx, execResp.ID)
-		if err != nil {
-			return fmt.Errorf("inspect install exec: %w", err)
-		}
-		if !inspect.Running {
-			if inspect.ExitCode != 0 {
-				return fmt.Errorf("tool install failed with exit code %d", inspect.ExitCode)
-			}
-			return nil
-		}
-	}
-	return fmt.Errorf("tool install timed out")
-}
-
 func (m *Manager) startAgent(ctx context.Context, s *registry.Session) error {
 	cmd := tools.InvokeCommand(s.Tool, tools.WebPort)
 	execResp, err := m.docker.ContainerExecCreate(ctx, s.ContainerName, container.ExecOptions{
@@ -799,11 +707,12 @@ func (m *Manager) startAgent(ctx context.Context, s *registry.Session) error {
 		return fmt.Errorf("start agent exec: %w", err)
 	}
 
+	m.mu.Lock()
 	m.execIDs[s.ID] = execResp.ID
-
 	if m.logBuffers[s.ID] == nil {
 		m.logBuffers[s.ID] = m.newLogBuffer()
 	}
+	m.mu.Unlock()
 
 	// Start a log-tail exec to stream agent output into the buffer.
 	// We run this in a goroutine because AttachLogStream may briefly block
@@ -908,6 +817,7 @@ func buildEnv(s *registry.Session, shortID string) []string {
 	env := []string{
 		"HOME=/agent/home",
 		"XDG_CONFIG_HOME=/agent/home/.config",
+		fmt.Sprintf("XDG_DATA_HOME=%s", filepath.Dir(s.OpenCodeDataDir)),
 		"PATH=/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"NPM_CONFIG_PREFIX=/agent",
 		fmt.Sprintf("OPENCODE_CONFIG_DIR=%s", s.OpenCodeConfigDir),

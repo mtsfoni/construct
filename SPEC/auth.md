@@ -9,7 +9,7 @@ Covers R-AUTH-1, R-AUTH-2, R-AUTH-3, R-AUTH-4.
 1. **Credentials are never passed as Docker env vars.** `docker inspect` must not
    expose secrets (R-AUTH-1). All secrets reach the container as bind-mounted files
    sourced by the entrypoint script.
-2. **Global auth persists across folders and survives `reset`.** Auth state is
+2. **Global auth persists across folders and survives `purge`.** Auth state is
    scoped to the credential store, not to the session container or the agent layer
    (R-AUTH-2).
 3. **Per-folder credentials override global ones.** If both exist for the same key,
@@ -171,10 +171,10 @@ The daemon communicates with the CLI over a Unix domain socket at
 (during `config cred set`).
 
 Unix domain sockets have filesystem permissions. The socket is created with
-mode `0600` (owner read-write only), and the containing directory
-(`~/.config/construct/`) has mode `0700`. Only the user who owns the daemon
-can connect. This provides the same level of protection as the credential
-files themselves and is acceptable for a single-user tool.
+mode `0666` (world read-write), relying on the containing directory
+(`~/.config/construct/`) for access control. Only processes that can reach
+the socket path can connect. This provides acceptable protection for a
+single-user tool running on a personal workstation.
 
 No additional authentication or encryption (e.g. TLS) is applied to the
 socket. The threat model assumes a trusted local user (R-SEC-4).
@@ -184,21 +184,9 @@ socket. The threat model assumes a trusted local user (R-SEC-4).
 ## Interactive auth (e.g. opencode /connect)
 
 Some tools use interactive OAuth flows that produce tokens stored in the tool's
-own config directory (e.g. `~/.config/opencode/`). Because the host's
-`~/.config/opencode/` is mounted read-only into the container, any tokens the
-agent acquires via interactive auth inside the container will need to be persisted
-somewhere.
-
-Since the opencode config dir is read-only inside the container (R-HOME-1 requires
-the host to be the source of truth), the agent's interactive auth writes to
-`/agent/home/.config/opencode/` (the agent home overlay) rather than the
-read-only host mount.
-
-**Consequence:** interactive auth tokens acquired inside the container are scoped
-to the agent layer of that session. They survive `stop`/`start` but are lost on
-`reset` or `destroy`. Users who want auth to persist globally should run the
-auth flow once on the host (outside construct) so it lands in `~/.config/opencode/`
-where it is automatically picked up by all sessions (R-AUTH-2).
-
-This behaviour is documented in the CLI and in the injected `construct-agents.md`
-(see `SPEC/config.md`).
+own data directory (e.g. `~/.local/share/opencode/auth.json`). The host's
+opencode data directory is bind-mounted **read-write** into the container at its
+exact host path (e.g. `~/.local/share/opencode/`), so any tokens the agent
+acquires via `/connect` are written directly to the host's data directory. This
+satisfies R-AUTH-2: tokens persist globally across all sessions, survive
+`destroy`, and survive `purge`.

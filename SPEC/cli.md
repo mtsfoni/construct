@@ -1,7 +1,7 @@
 # construct — CLI Spec
 
 Covers R-SES-2, R-SES-4, R-SES-5, R-SES-6, R-SES-7, R-UX-1, R-UX-2, R-UX-3,
-R-UX-4, R-AUTH-4, R-OBS-5.
+R-UX-4, R-UX-6, R-UX-7, R-AUTH-4, R-OBS-5, R-LIFE-5.
 
 ---
 
@@ -24,6 +24,40 @@ Global flags apply to all commands:
 
 ---
 
+## Help output (R-UX-6)
+
+When `construct` is invoked with no arguments and no flags, it prints a help
+summary to stdout and exits with code 0. No daemon bootstrap is performed.
+
+The help output lists all commands with a one-line description:
+
+```
+Usage: construct [global-flags] <command> [flags] [args]
+
+Global flags:
+  --debug               Enable verbose logging (or drop into shell for 'run')
+  --daemon-socket <p>   Override daemon socket path
+  --version             Print version and exit
+
+Commands:
+  run       Start or attach to a session for a folder (default command)
+  qs        Quickstart: replay last invocation for a folder
+  ls        List all sessions
+  attach    Attach to a running session
+  stop      Stop a running session
+  destroy   Permanently destroy a session and all its state
+  purge     Remove all construct containers, volumes, and images
+  logs      View or stream session log output
+  config    Manage credentials (config cred set/unset/list)
+
+Run 'construct <command> --help' for command-specific flags.
+```
+
+The same output is printed when `--help` or `-help` is passed as the only
+argument. No error message is shown; the exit code is 0.
+
+---
+
 ## Command reference
 
 ### `construct [run]` — Start or attach to a session
@@ -35,7 +69,12 @@ This is the primary command. When invoked from inside a folder (or with
 ```
 construct [run] [flags]
 construct [run] --folder <path> [flags]
+construct [run] <path> [flags]
 ```
+
+A bare positional argument (without `--folder`) is also accepted as the folder
+path. For example, `construct /home/alice/src/myapp` and
+`construct --folder /home/alice/src/myapp` are equivalent.
 
 **Flags:**
 
@@ -58,8 +97,9 @@ construct [run] --folder <path> [flags]
    `SPEC/containers.md`). Exit with error if not met.
 3. Bootstrap daemon if not running (see `SPEC/daemon.md`).
 4. Send `session.start` to daemon with all flags as params, including `host_uid`
-   (from `os.Getuid()`), `host_gid` (from `os.Getgid()`), and
-   `opencode_config_dir` (resolved host opencode config path).
+   (from `os.Getuid()`), `host_gid` (from `os.Getgid()`),
+   `opencode_config_dir` (resolved host opencode config path), and
+   `opencode_data_dir` (resolved host opencode data path).
 5. If a session already exists for this folder:
    - If `--tool`, `--stack`, `--docker`, or `--debug` are supplied and differ from
      the existing session: print a warning and ignore the new values
@@ -68,8 +108,16 @@ construct [run] --folder <path> [flags]
    - Otherwise: attach normally.
 6. Receive back the session connection info (web URL and/or TUI attach command).
 7. If `--web` (default): print the URL and optionally open it in the browser.
-8. Stream session logs to the terminal until the user presses Ctrl-C or the session
-   stops. Ctrl-C detaches the CLI but does not stop the session (R-SES-8).
+   Print the TUI attach hint if present.
+8. Wait until the agent's web server is reachable (readiness probe): HTTP GET
+   `http://localhost:<port>/` in a loop, retrying every 250 ms, for up to 60 s.
+   Print a `Waiting for agent...` progress indicator while probing. If the probe
+   succeeds, the CLI exits 0 and the shell is returned (R-UX-7). If the 60 s
+   timeout expires without a successful probe, print a warning and exit 0 anyway
+   (the session is still running; the user can open the URL manually).
+
+Note: log streaming is **not** performed by `run` or `attach`. Use
+`construct logs -f` to follow session output.
 
 **When `--debug` is set:**
 - The daemon starts the container but does not run the agent. The CLI then runs
@@ -159,8 +207,9 @@ exists for the resolved folder or ID. If no session is found, prints:
 `No session found for <folder-or-id>. Use 'construct run' to start one.` and
 exits with code 1. If a session is found, sends `session.start` to the daemon
 (same as `construct run`). If the session is running, this is a pure attach —
-prints the web URL and streams logs without modification. If the session is
-stopped, it is restarted automatically (same as `construct run` would do).
+prints the web URL and waits for the readiness probe without modification. If
+the session is stopped, it is restarted automatically (same as `construct run`
+would do).
 
 ---
 
@@ -202,23 +251,34 @@ construct destroy [<session-id-or-folder>]
 
 ---
 
-### `construct reset` — Reset to clean stack image
+### `construct purge` — Remove all construct state
 
-Reset the agent layer back to the clean stack image (R-LIFE-5).
+Wipe all construct Docker resources (R-LIFE-5).
 
 ```
-construct reset [<session-id-or-folder>]
+construct purge [--force]
 ```
 
 1. Prompts for confirmation:
-   `Reset session for /path/to/folder? Agent-installed tools will be lost. Auth and global config are not affected. [y/N]`
-2. On confirmation, sends `session.reset` to the daemon.
-3. Daemon stops the container (if running), removes and recreates the agent layer
-   volume (empty), and restarts the container.
-4. Auth and global opencode config are **not** affected (R-LIFE-5, R-AUTH-2).
-5. CLI prints confirmation. The session is left in `running` state after reset.
+   `Purge all construct containers, volumes, and images? This cannot be undone. [y/N]`
+2. On confirmation, the CLI:
+   a. Stops and removes all containers whose names start with `construct-`
+      (session containers, daemon container, dind sidecars).
+   b. Removes all Docker volumes whose names start with `construct-`
+      (agent layer volumes, home volumes).
+   c. Removes all Docker images whose repository starts with `construct-`
+      (all stack images, daemon image).
+   d. Removes the daemon state directory contents: `~/.config/construct/sessions/`,
+      `~/.config/construct/quickstart/`, and `~/.config/construct/daemon-state.json`.
+3. Auth credentials (`~/.config/construct/credentials/`) are **not** removed
+   (R-AUTH-2) — the user keeps their API keys and tokens.
+4. CLI prints a summary of what was removed and exits.
 
 `--force` flag skips the confirmation prompt.
+
+**Implementation note:** `purge` is a pure CLI-side operation — it talks directly
+to Docker (not through the daemon), because the daemon itself is one of the things
+being removed. The CLI uses the Docker SDK directly for this command only.
 
 ---
 

@@ -49,16 +49,16 @@ The image is minimal, containing:
 - The `constructd` Go binary (the daemon server)
 - The Docker CLI (for managing session containers)
 
-The daemon Dockerfile (`stacks/daemon/Dockerfile`) is a multi-stage build:
-1. **Build stage:** Uses a Go builder image to compile `cmd/constructd/` with
-   the embedded stack Dockerfiles (via `go:embed`).
-2. **Runtime stage:** Copies the compiled `constructd` binary into a minimal
-   Debian-based image with the Docker CLI installed.
+The daemon Dockerfile (`stacks/daemon/Dockerfile`) is a simple single-stage image:
+it starts from a Debian-based base image with the Docker CLI installed and copies
+in the pre-compiled `constructd` binary.
 
-The CLI embeds this Dockerfile and sends it (along with the full Go source
-tree as build context) to `docker build` during bootstrap. This means the
-daemon binary is compiled inside Docker, which requires no Go toolchain on
-the host.
+The CLI cross-compiles `constructd` locally (using `go build` with
+`GOOS=linux GOARCH=amd64 CGO_ENABLED=0`) before running `docker build`. The
+resulting binary is placed in the extracted build context directory alongside the
+Dockerfile. This means the host must have a Go toolchain available, but the Docker
+image itself does not need one — the build context contains only the pre-compiled
+binary.
 
 ### Image version stamping
 
@@ -88,7 +88,7 @@ When the CLI is invoked, before doing anything else:
    `docker run -d --name construct-daemon ...` with the properties above.
 3. If stopped: `docker start construct-daemon`.
 4. Wait (with timeout) for the daemon Unix socket to become connectable. Timeout:
-   10 seconds, polling every 200ms.
+   30 seconds, polling every 200ms.
 5. Proceed with the requested command.
 
 ### Bootstrap race condition
@@ -184,7 +184,8 @@ CLI maps it to `repo` when sending session commands.
   "debug": false,
   "host_uid": 1000,
   "host_gid": 1000,
-  "opencode_config_dir": "/home/alice/.config/opencode"
+  "opencode_config_dir": "/home/alice/.config/opencode",
+  "opencode_data_dir": "/home/alice/.local/share/opencode"
 }
 ```
 
@@ -244,23 +245,6 @@ Either `session_id` or `repo` must be provided. If both are provided,
 ```json
 {
   "destroyed": true
-}
-```
-
-### `session.reset`
-
-**Params:** Same as `session.stop`.
-
-`session.reset` uses the stored `host_uid`, `host_gid`, and
-`opencode_config_dir` from the session record (not from the CLI request).
-The container's mount parameters cannot be changed without recreating it,
-and reset does not recreate the container.
-
-**Response (end):**
-
-```json
-{
-  "session": { ... session record with status: "running" ... }
 }
 ```
 
@@ -430,6 +414,7 @@ to `~/.config/construct/daemon-state.json`).
       "host_uid": 1000,
       "host_gid": 1000,
       "opencode_config_dir": "/home/alice/.config/opencode",
+      "opencode_data_dir": "/home/alice/.local/share/opencode",
       "status": "running",
       "created_at": "2026-01-15T10:30:00Z",
       "started_at": "2026-01-15T10:30:05Z",
@@ -480,6 +465,7 @@ fields from the original spec):
 | `host_uid` | int | Host user's UID at session creation time |
 | `host_gid` | int | Host user's GID at session creation time |
 | `opencode_config_dir` | string | Resolved host opencode config path |
+| `opencode_data_dir` | string | Resolved host opencode data path |
 | `web_port` | int | Assigned host port for the web UI |
 | `debug` | bool | Whether this is a debug session (no agent, shell instead) |
 
@@ -511,8 +497,10 @@ container states:
 
 ## Log buffer
 
-The daemon attaches to the stdout/stderr stream of each running session container
-and feeds it into a per-session ring buffer (R-OBS-4).
+The daemon captures each running session's log output by running a
+`tail -n +0 -f <log-path>` exec inside the container and piping its output
+into a per-session ring buffer (R-OBS-4). For opencode sessions the log path
+is `/agent/home/.local/share/opencode/opencode.log`.
 
 - Buffer size: 10,000 lines per session (configurable via `CONSTRUCT_LOG_BUFFER`
   daemon env var).
@@ -568,7 +556,7 @@ and feeds it into a per-session ring buffer (R-OBS-4).
 
 ## Error handling
 
-- If the daemon socket is not connectable within 10 seconds of the container being
+- If the daemon socket is not connectable within 30 seconds of the container being
   detected as running, the CLI prints a diagnostic and exits with a non-zero code.
 - The daemon logs all errors to its own stdout (visible via `docker logs construct-daemon`).
 - Protocol errors (malformed JSON, unknown command) return an `error` response;

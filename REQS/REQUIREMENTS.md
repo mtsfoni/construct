@@ -109,10 +109,14 @@ If the agent installs a tool or runtime during a session, that installation must
 survive even if the stack image is updated or rebuilt. I should not lose what the
 agent set up just because I pulled a new version of the stack.
 
-### R-LIFE-5 — Explicit clean slate
-I can explicitly reset a session back to a clean stack image when I want to start
-fresh. This is a deliberate action with a confirmation step — not something that
-happens automatically. Resetting a session does not affect auth or global config.
+### R-LIFE-5 — Explicit full purge
+I can purge all construct state in one command when I want a completely clean
+slate — useful before upgrades, after breakage, or when done with construct on a
+machine. Purge stops and removes all session containers and their agent layer
+volumes, stops and removes the daemon container, and removes all construct Docker
+images. Auth credentials (host cred files) are preserved by default so the user
+does not have to re-authenticate after a purge. This is a deliberate action with
+a confirmation step — not something that happens automatically.
 
 ---
 
@@ -124,7 +128,7 @@ bind-mounted files so they do not appear in docker inspect output.
 
 ### R-AUTH-2 — Global auth persists across folders
 OAuth tokens and interactive auth state (e.g. from opencode /connect) persist
-globally across all folders and survive session reset. A separate mechanism from the
+globally across all folders and survive purge. A separate mechanism from the
 per-folder container layer.
 
 ### R-AUTH-3 — Per-folder credential override
@@ -217,12 +221,24 @@ told which ports are published so it binds correctly.
 The primary way to interact with a construct session is via the browser. The TUI
 (opencode attach) is supported for users who prefer it but is not the focus.
 
+### R-UX-7 — construct run returns the shell after the agent is ready
+`construct run` and `construct attach` must return the shell prompt as soon as
+the session is ready — they must not block streaming logs. After printing the web
+URL and TUI hint, the CLI waits until the agent's web server is reachable on the
+host port (readiness probe), then exits cleanly. Log streaming is a separate
+explicit command (`construct logs -f`).
+
 ### R-UX-4 — Debug mode
 A --debug flag drops into an interactive shell in the container instead of starting
 the agent. For troubleshooting image and container state.
 
 ### R-UX-5 — Linux only
 See R-PLAT-1.
+
+### R-UX-6 — Help on bare invocation
+Running `construct` with no arguments and no flags prints a help summary listing
+all available commands with a one-line description of each, then exits with code 0.
+The user should never be left wondering what commands exist.
 
 ---
 

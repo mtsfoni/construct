@@ -32,7 +32,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent layer environment variables
+# Install opencode into the image (NPM_CONFIG_PREFIX is not set yet, so npm
+# uses the default prefix /usr/local — binary lands at /usr/local/bin/opencode).
+RUN npm install -g opencode-ai
+
+# Create /agent with world-writable permissions so the named volume that mounts
+# here is writable by whichever host UID the container runs as (--user uid:gid).
+RUN mkdir -p /agent && chmod 0777 /agent
+
+# Agent layer environment variables — /agent is for agent-installed tools only.
+# opencode itself lives in /usr/local/bin (baked into the image above).
 ENV HOME=/agent/home
 ENV XDG_CONFIG_HOME=/agent/home/.config
 ENV PATH=/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

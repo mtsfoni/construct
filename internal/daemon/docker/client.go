@@ -13,33 +13,12 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// IDMap represents a single UID or GID mapping for an idmap mount.
-// ContainerID is the ID inside the container (typically 0 for root),
-// HostID is the corresponding ID on the host, and Size is the range size (typically 1).
-type IDMap struct {
-	ContainerID uint32
-	HostID      uint32
-	Size        uint32
-}
-
-// IDMapping holds the UID and GID mappings for an idmap bind mount.
-// These are passed to Docker API as BindOptions.IDMapping (available since API 1.44 / Docker 25.0).
-type IDMapping struct {
-	UIDMappings []IDMap
-	GIDMappings []IDMap
-}
-
 // Client defines all Docker operations used by construct.
 // This interface is implemented by the real Docker SDK client and by fakes
 // for testing.
 type Client interface {
 	// Container operations
 	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkConfig *network.NetworkingConfig, platform *specs.Platform, name string) (container.CreateResponse, error)
-	// ContainerCreateWithIDMap is like ContainerCreate but allows specifying an idmap
-	// for the bind mount at bindSrc/bindDst. This is needed because the Go SDK's
-	// mount.BindOptions does not expose the IDMapping field even though the Docker
-	// API (v1.44+) supports it.
-	ContainerCreateWithIDMap(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkConfig *network.NetworkingConfig, platform *specs.Platform, name string, bindSrc, bindDst string, idmap IDMapping) (container.CreateResponse, error)
 	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
 	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
@@ -72,3 +51,4 @@ type Client interface {
 
 	Close() error
 }
+

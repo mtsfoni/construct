@@ -16,7 +16,7 @@ environment so the agent knows where it is and what it can do (R-HOME-3).
 
 ---
 
-## Host opencode config — read-only mount
+## Host opencode config — read-write mount
 
 The host's opencode configuration directory is bind-mounted into the session
 container at the same path it has on the host. The CLI resolves the actual
@@ -24,27 +24,26 @@ config directory by checking `$XDG_CONFIG_HOME` (if set) and falling back to
 `~/.config`:
 
 ```
-$XDG_CONFIG_HOME/opencode/  →  $XDG_CONFIG_HOME/opencode/  (read-only inside container)
+$XDG_CONFIG_HOME/opencode/  →  $XDG_CONFIG_HOME/opencode/  (read-write inside container)
 ```
 
 Or if `$XDG_CONFIG_HOME` is not set:
 
 ```
-~/.config/opencode/  →  ~/.config/opencode/  (read-only inside container)
+~/.config/opencode/  →  ~/.config/opencode/  (read-write inside container)
 ```
 
 The CLI passes the resolved host opencode config path to the daemon at session
-creation time. The daemon uses this path for the read-only bind mount.
+creation time. The daemon uses this path for the read-write bind mount.
 
 Because the container runs with `HOME=/agent/home` (the agent layer), opencode
 inside the container needs to be pointed at this config directory. The
 `OPENCODE_CONFIG_DIR` environment variable is set to the resolved host config
 path inside the container.
 
-The host is the source of truth. The agent can read the config but not modify it
-(R-HOME-1). If the agent tries to write to a config path inside the container, it
-writes to `/agent/home/...` (the agent layer) via the $HOME overlay, not to the
-read-only host mount.
+The host is the source of truth for global configuration. Because the mount is
+read-write, any config opencode writes at runtime (e.g. session state, theme
+preferences) is persisted to the host config directory (R-HOME-1).
 
 ---
 
@@ -72,8 +71,8 @@ The generated file tells the agent:
   Docker usage.
 - Which ports are published (so the agent binds dev servers to `0.0.0.0` on the
   correct ports, not localhost only).
-- That auth tokens acquired interactively are scoped to the agent layer (will not
-  persist after `reset`); for durable auth, authenticate on the host.
+  - That auth tokens acquired interactively are scoped to the agent layer (will not
+  persist after `destroy` or `purge`); for durable auth, authenticate on the host.
 - That the repo is at the exact same path as on the host.
 - Tool-installation advice: install tools to `/agent/bin` or using standard
   package managers (they install into `/agent/lib`) to ensure persistence.
@@ -91,13 +90,20 @@ The daemon generates the file content at session start (or restart), writes it t
 and bind-mounts it into the container at:
 
 ```
-/agent/home/.config/opencode/construct-agents.md   (read-only)
+/run/construct/agents.md   (read-only)
 ```
 
-This path is inside the agent layer volume, **not** inside the read-only host
-config mount. This avoids the Docker limitation where a file bind mount cannot
-overlay a path inside another bind mount (see `SPEC/containers.md` for the full
-mount layering explanation).
+The container's entrypoint script copies this file to its final destination on
+every container start:
+
+```
+/agent/home/.config/opencode/construct-agents.md
+```
+
+This two-step approach (bind at `/run/construct/agents.md`, copy to final path)
+avoids the Docker limitation where a file bind mount cannot overlay a path inside
+another bind mount (see `SPEC/containers.md` for the full mount layering
+explanation).
 
 opencode reads global instruction files from both `OPENCODE_CONFIG_DIR` (the
 host config mount) and `$XDG_CONFIG_HOME/opencode/` (which resolves to
@@ -130,9 +136,7 @@ any other per-session daemon-side state.
 
 - **Created at:** session start (`session.start` with a new session).
 - **Preserved across:** `session.stop` / `session.start` cycles, daemon restarts.
-- **Regenerated at:** `session.reset` (the `construct-agents.md` file is
-  regenerated, but the directory is not removed).
-- **Removed at:** `session.destroy` (the entire directory is removed).
+- **Removed at:** `session.destroy` (the entire directory is removed), or `construct purge`.
 
 ---
 
@@ -140,8 +144,9 @@ any other per-session daemon-side state.
 
 | What | Host path | Container path | Mode |
 |---|---|---|---|
-| opencode global config dir | `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | same as host path | read-only |
-| construct injected instructions | `~/.config/construct/sessions/<id>/construct-agents.md` | `/agent/home/.config/opencode/construct-agents.md` | read-only |
+| opencode global config dir | `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | same as host path | read-write |
+| opencode data dir | `$XDG_DATA_HOME/opencode/` (or `~/.local/share/opencode/`) | same as host path | read-write |
+| construct injected instructions | `~/.config/construct/sessions/<id>/construct-agents.md` | `/run/construct/agents.md` (bind); entrypoint copies to `/agent/home/.config/opencode/construct-agents.md` | read-only bind |
 | Agent's writable home | (volume) | `/agent/home/` | read-write |
 | Repo | `<repo>` | `<repo>` (same path) | read-write |
 
@@ -152,17 +157,21 @@ any other per-session daemon-side state.
 | Variable | Value | Reason |
 |---|---|---|
 | `HOME` | `/agent/home` | Agent writes go to the persistent agent layer |
-| `XDG_CONFIG_HOME` | `/agent/home/.config` | Overrides XDG default so opencode writes land in agent layer |
+| `XDG_CONFIG_HOME` | `/agent/home/.config` | Overrides XDG default so opencode config writes land in agent layer |
+| `XDG_DATA_HOME` | host opencode data dir parent (e.g. `~/.local/share`) | Points XDG data resolution at the host-mounted data directory |
 | `OPENCODE_CONFIG_DIR` | resolved host opencode config path (e.g. `~/.config/opencode`) | Points opencode at the host config for reading |
 
 The CLI resolves the host opencode config path by checking `$XDG_CONFIG_HOME/opencode`
 (falling back to `~/.config/opencode`) and passes it to the daemon. The daemon
 sets `OPENCODE_CONFIG_DIR` in the container to this resolved path.
 
-The distinction matters: opencode reads global config from `OPENCODE_CONFIG_DIR`
-(the host mount), but any runtime state it writes (session state, OAuth tokens
-from interactive auth) goes to the `XDG_CONFIG_HOME` path (the agent layer).
+`XDG_DATA_HOME` is set to `filepath.Dir(opencode_data_dir)` (e.g. if
+`opencode_data_dir` is `~/.local/share/opencode`, then `XDG_DATA_HOME` is
+`~/.local/share`). This causes opencode to resolve its data path as
+`$XDG_DATA_HOME/opencode/`, which maps to the bind-mounted host data directory.
 
-This is the mechanism by which R-HOME-1 (read the host config) and R-AUTH-2
-(auth persists globally) coexist: read-only host config is always present;
-interactive write-back goes to the agent layer.
+The result: opencode reads global config from `OPENCODE_CONFIG_DIR` (the
+host config mount, read-write), and reads/writes data (auth tokens, session
+state) to the host data directory via the `XDG_DATA_HOME` mount. Both mounts
+are read-write, so both config and data changes from within the container
+persist on the host (R-HOME-1, R-AUTH-2).

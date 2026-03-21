@@ -18,7 +18,6 @@ import (
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/construct-run/construct/internal/auth"
-	dockeriface "github.com/construct-run/construct/internal/daemon/docker"
 	"github.com/construct-run/construct/internal/daemon/registry"
 	"github.com/construct-run/construct/internal/quickstart"
 	"github.com/construct-run/construct/internal/stacks"
@@ -44,6 +43,8 @@ type fakeDocker struct {
 	calls []string
 	// execCounter for generating unique exec IDs
 	execCounter int
+	// lastContainerConfig is the most recent container.Config passed to ContainerCreate
+	lastContainerConfig *container.Config
 }
 
 func newFakeDocker() *fakeDocker {
@@ -59,21 +60,13 @@ func newFakeDocker() *fakeDocker {
 
 func (f *fakeDocker) record(method string) { f.calls = append(f.calls, method) }
 
-func (f *fakeDocker) ContainerCreate(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *specs.Platform, name string) (container.CreateResponse, error) {
+func (f *fakeDocker) ContainerCreate(_ context.Context, cfg *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *specs.Platform, name string) (container.CreateResponse, error) {
 	f.record("ContainerCreate")
 	if err := f.errors["ContainerCreate"]; err != nil {
 		return container.CreateResponse{}, err
 	}
+	f.lastContainerConfig = cfg
 	f.containers[name] = false // created but not started
-	return container.CreateResponse{ID: name}, nil
-}
-
-func (f *fakeDocker) ContainerCreateWithIDMap(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *specs.Platform, name string, _, _ string, _ dockeriface.IDMapping) (container.CreateResponse, error) {
-	f.record("ContainerCreateWithIDMap")
-	if err := f.errors["ContainerCreateWithIDMap"]; err != nil {
-		return container.CreateResponse{}, err
-	}
-	f.containers[name] = false
 	return container.CreateResponse{ID: name}, nil
 }
 
@@ -313,7 +306,7 @@ func TestSession_Start_AttachesToRunning(t *testing.T) {
 	}
 	// No new container should have been created
 	for _, call := range fd.calls {
-		if call == "ContainerCreateWithIDMap" || call == "ContainerCreate" {
+		if call == "ContainerCreate" {
 			t.Errorf("unexpected Docker call %q on attach", call)
 		}
 	}
@@ -451,33 +444,6 @@ func TestSession_Destroy(t *testing.T) {
 	}
 }
 
-func TestSession_Reset(t *testing.T) {
-	fd := newFakeDocker()
-	m, dir := newTestManager(t, fd)
-	repo := dir
-
-	res, err := m.Start(context.Background(), defaultParams(repo), nil)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	id := res.Session.ID
-	shortID := res.Session.ShortID()
-	volName := "construct-layer-" + shortID
-
-	// Reset
-	resetRes, err := m.Reset(context.Background(), id)
-	if err != nil {
-		t.Fatalf("Reset: %v", err)
-	}
-	if resetRes.Status != registry.StatusRunning {
-		t.Errorf("status after reset = %q, want running", resetRes.Status)
-	}
-	// Volume should still exist (recreated fresh)
-	if !fd.volumes[volName] {
-		t.Error("expected volume to exist after reset")
-	}
-}
-
 func TestSession_NotFound(t *testing.T) {
 	fd := newFakeDocker()
 	m, dir := newTestManager(t, fd)
@@ -492,10 +458,59 @@ func TestSession_NotFound(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for unknown session ID")
 	}
+}
 
-	_, err = m.Reset(context.Background(), "nonexistent")
-	if err == nil {
-		t.Error("expected error for unknown session ID")
+func TestSession_RestartUpdatesUIDGID(t *testing.T) {
+	fd := newFakeDocker()
+	m, dir := newTestManager(t, fd)
+	repo := dir
+
+	// Start with UID 1000.
+	p := defaultParams(repo)
+	p.HostUID = 1000
+	p.HostGID = 1000
+	res, err := m.Start(context.Background(), p, nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	id := res.Session.ID
+	containerName := res.Session.ContainerName
+
+	// Stop the session.
+	if _, err := m.Stop(context.Background(), id); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Restart with a different UID.
+	p2 := defaultParams(repo)
+	p2.HostUID = 2000
+	p2.HostGID = 2000
+	res2, err := m.Start(context.Background(), p2, nil)
+	if err != nil {
+		t.Fatalf("Start (restart with new UID): %v", err)
+	}
+
+	// Registry record should reflect the new UID/GID.
+	if res2.Session.HostUID != 2000 {
+		t.Errorf("HostUID = %d, want 2000", res2.Session.HostUID)
+	}
+	if res2.Session.HostGID != 2000 {
+		t.Errorf("HostGID = %d, want 2000", res2.Session.HostGID)
+	}
+
+	// The container was removed and recreated; lastContainerConfig should
+	// reflect the new User field.
+	wantUser := "2000:2000"
+	if fd.lastContainerConfig == nil {
+		t.Fatal("expected ContainerCreate to have been called")
+	}
+	if fd.lastContainerConfig.User != wantUser {
+		t.Errorf("container User = %q, want %q", fd.lastContainerConfig.User, wantUser)
+	}
+
+	// Container should be running.
+	if !fd.containers[containerName] {
+		t.Error("expected container to be running after restart")
 	}
 }
 
@@ -935,5 +950,44 @@ func TestSession_SavesQuickstart(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Error("expected quickstart record to be saved")
+	}
+}
+
+// TestSession_ContainerUserIsHostUID verifies that createContainer sets the
+// container User field to "uid:gid" matching the host user that started the
+// session. This is the mechanism that ensures files written by the agent inside
+// the container are owned by the invoking user on the host filesystem.
+func TestSession_ContainerUserIsHostUID(t *testing.T) {
+	tests := []struct {
+		name     string
+		uid      int
+		gid      int
+		wantUser string
+	}{
+		{"typical user", 1000, 1000, "1000:1000"},
+		{"root", 0, 0, "0:0"},
+		{"uid gid differ", 1001, 1002, "1001:1002"},
+		{"high uid", 65534, 65534, "65534:65534"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fd := newFakeDocker()
+			m, dir := newTestManager(t, fd)
+
+			p := defaultParams(dir)
+			p.HostUID = tt.uid
+			p.HostGID = tt.gid
+
+			if _, err := m.Start(context.Background(), p, nil); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+
+			if fd.lastContainerConfig == nil {
+				t.Fatal("ContainerCreate was never called")
+			}
+			if fd.lastContainerConfig.User != tt.wantUser {
+				t.Errorf("container User = %q, want %q", fd.lastContainerConfig.User, tt.wantUser)
+			}
+		})
 	}
 }

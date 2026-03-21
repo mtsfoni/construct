@@ -48,6 +48,12 @@ func runCLI() error {
 		return nil
 	}
 
+	// Bare invocation or explicit --help/-help: print help and exit (R-UX-6).
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-help" {
+		printHelp(os.Stdout)
+		return nil
+	}
+
 	// Resolve the config dir and socket path.
 	constructConfigDir := config.ConstructConfigDir()
 	if globalSocketPath == "" {
@@ -58,7 +64,7 @@ func runCLI() error {
 	cmd := "run"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
-		case "run", "qs", "ls", "list", "attach", "stop", "destroy", "reset", "logs", "config":
+		case "run", "qs", "ls", "list", "attach", "stop", "destroy", "purge", "logs", "config":
 			cmd = args[0]
 			if cmd == "list" {
 				cmd = "ls"
@@ -71,7 +77,7 @@ func runCLI() error {
 	defer cancel()
 
 	// Bootstrap daemon (except for commands that don't need it).
-	if cmd != "version" {
+	if cmd != "version" && cmd != "purge" {
 		// Check host platform requirements (kernel ≥ 5.12, Docker ≥ 25.0).
 		dockerVer, err := bootstrap.DockerServerVersion(ctx)
 		if err != nil {
@@ -108,6 +114,7 @@ func runCLI() error {
 		flags.HostUID = os.Getuid()
 		flags.HostGID = os.Getgid()
 		flags.OpenCodeConfigDir = config.OpenCodeConfigDir()
+		flags.OpenCodeDataDir = config.OpenCodeDataDir()
 		if !flags.NoWeb {
 			flags.Web = true
 		}
@@ -152,16 +159,12 @@ func runCLI() error {
 		}
 		return c.Destroy(ctx, positional, force, w, errW)
 
-	case "reset":
+	case "purge":
 		var force bool
-		var positional string
-		fs := flag.NewFlagSet("reset", flag.ContinueOnError)
+		fs := flag.NewFlagSet("purge", flag.ContinueOnError)
 		fs.BoolVar(&force, "force", false, "skip confirmation")
 		fs.Parse(args) //nolint:errcheck
-		if fs.NArg() > 0 {
-			positional = fs.Arg(0)
-		}
-		return c.Reset(ctx, positional, force, w, errW)
+		return cli.Purge(ctx, constructConfigDir, force, w, errW)
 
 	case "logs":
 		var follow bool
@@ -292,6 +295,10 @@ func parseRunFlags(args []string, globalDebug bool) cli.RunFlags {
 	fs.Parse(args) //nolint:errcheck
 
 	flags.Ports = []string(portFlags)
+	// A bare positional argument is treated as the folder path.
+	if flags.Folder == "" && fs.NArg() > 0 {
+		flags.Folder = fs.Arg(0)
+	}
 	return flags
 }
 
@@ -300,3 +307,26 @@ type multiFlag []string
 
 func (f *multiFlag) String() string     { return strings.Join(*f, ",") }
 func (f *multiFlag) Set(v string) error { *f = append(*f, v); return nil }
+
+// printHelp writes the command summary to w (R-UX-6).
+func printHelp(w *os.File) {
+	fmt.Fprintln(w, "Usage: construct [global-flags] <command> [flags] [args]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Global flags:")
+	fmt.Fprintln(w, "  --debug               Enable verbose logging (or drop into shell for 'run')")
+	fmt.Fprintln(w, "  --daemon-socket <p>   Override daemon socket path")
+	fmt.Fprintln(w, "  --version             Print version and exit")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  run       Start or attach to a session for a folder (default command)")
+	fmt.Fprintln(w, "  qs        Quickstart: replay last invocation for a folder")
+	fmt.Fprintln(w, "  ls        List all sessions")
+	fmt.Fprintln(w, "  attach    Attach to a running session")
+	fmt.Fprintln(w, "  stop      Stop a running session")
+	fmt.Fprintln(w, "  destroy   Permanently destroy a session and all its state")
+	fmt.Fprintln(w, "  purge     Remove all construct containers, volumes, and images")
+	fmt.Fprintln(w, "  logs      View or stream session log output")
+	fmt.Fprintln(w, "  config    Manage credentials (config cred set/unset/list)")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Run 'construct <command> --help' for command-specific flags.")
+}

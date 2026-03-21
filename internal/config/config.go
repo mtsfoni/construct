@@ -22,6 +22,19 @@ func OpenCodeConfigDir() string {
 	return filepath.Join(home, ".config", "opencode")
 }
 
+// OpenCodeDataDir returns the host opencode data directory path,
+// respecting the XDG_DATA_HOME convention. opencode writes auth.json here.
+func OpenCodeDataDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "opencode")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("~", ".local", "share", "opencode")
+	}
+	return filepath.Join(home, ".local", "share", "opencode")
+}
+
 // ConstructConfigDir returns the construct configuration/state directory path,
 // respecting the XDG_CONFIG_HOME convention.
 func ConstructConfigDir() string {
@@ -106,10 +119,9 @@ func GenerateAgentsMD(p AgentsParams) string {
 
 	sb.WriteString("## Auth and credentials\n\n")
 	sb.WriteString("Credentials (API keys, tokens) are injected as environment variables from bind-mounted files.\n")
-	sb.WriteString("If you run an interactive auth flow inside this container (e.g. `/connect`), the resulting\n")
-	sb.WriteString("tokens are stored in the **agent layer** — they survive `stop`/`start` but are **lost on reset**.\n")
-	sb.WriteString("For durable global auth, authenticate on the host (outside construct) so the tokens land\n")
-	sb.WriteString("in `~/.config/opencode/` where all sessions will pick them up.\n")
+	sb.WriteString("The opencode auth file (`~/.local/share/opencode/auth.json` on the host) is bind-mounted\n")
+	sb.WriteString("read-write, so tokens written by an interactive auth flow (e.g. `/connect`) persist to\n")
+	sb.WriteString("the host and are shared across all sessions automatically.\n")
 
 	return sb.String()
 }

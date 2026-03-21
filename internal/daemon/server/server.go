@@ -178,8 +178,6 @@ func (s *Server) dispatch(ctx context.Context, w *connWriter, req Request) {
 		s.handleSessionStop(ctx, w, req.Params)
 	case "session.destroy":
 		s.handleSessionDestroy(ctx, w, req.Params)
-	case "session.reset":
-		s.handleSessionReset(ctx, w, req.Params)
 	case "session.list":
 		s.handleSessionList(ctx, w, req.Params)
 	case "session.logs":
@@ -207,6 +205,7 @@ type sessionStartParams struct {
 	HostUID           int      `json:"host_uid"`
 	HostGID           int      `json:"host_gid"`
 	OpenCodeConfigDir string   `json:"opencode_config_dir"`
+	OpenCodeDataDir   string   `json:"opencode_data_dir"`
 }
 
 type sessionStartResult struct {
@@ -242,6 +241,7 @@ func (s *Server) handleSessionStart(ctx context.Context, w *connWriter, raw json
 		HostUID:           p.HostUID,
 		HostGID:           p.HostGID,
 		OpenCodeConfigDir: p.OpenCodeConfigDir,
+		OpenCodeDataDir:   p.OpenCodeDataDir,
 	}, progress)
 	if err != nil {
 		w.sendError(err.Error()) //nolint:errcheck
@@ -314,34 +314,6 @@ func (s *Server) handleSessionDestroy(ctx context.Context, w *connWriter, raw js
 	}
 
 	w.sendEnd(sessionDestroyResult{Destroyed: true}) //nolint:errcheck
-}
-
-// --- session.reset ---
-
-type sessionResetResult struct {
-	Session interface{} `json:"session"`
-}
-
-func (s *Server) handleSessionReset(ctx context.Context, w *connWriter, raw json.RawMessage) {
-	var p sessionRefParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		w.sendError(fmt.Sprintf("invalid params: %v", err)) //nolint:errcheck
-		return
-	}
-
-	id, err := s.resolveSessionID(p.SessionID, p.Repo)
-	if err != nil {
-		w.sendError(err.Error()) //nolint:errcheck
-		return
-	}
-
-	sess, err := s.mgr.Reset(ctx, id)
-	if err != nil {
-		w.sendError(err.Error()) //nolint:errcheck
-		return
-	}
-
-	w.sendEnd(sessionResetResult{Session: sess}) //nolint:errcheck
 }
 
 // --- session.list ---

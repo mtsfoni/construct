@@ -1,6 +1,6 @@
 # construct — Tools Spec
 
-Covers R-TOOL-1, R-TOOL-3.
+Covers R-TOOL-1.
 
 ---
 
@@ -11,8 +11,7 @@ opencode is the only supported tool (R-TOOL-1).
 | Property | Value |
 |---|---|
 | npm package | `opencode-ai` |
-| Install command | `npm install -g opencode-ai` |
-| Install path | `/agent/bin/opencode` (symlinked by npm from `/agent/lib/node_modules/opencode-ai/bin/opencode`) |
+| Binary path | `/usr/local/bin/opencode` (installed in Dockerfile via `npm install -g opencode-ai` before `NPM_CONFIG_PREFIX` is set) |
 | Invoke command | `opencode serve --hostname 0.0.0.0 --port 4096` |
 | Subcommand | `serve` — starts a headless opencode server (no TUI, just the web API) |
 | Hostname flag | `--hostname 0.0.0.0` — required so the server binds to all interfaces, not just loopback |
@@ -36,30 +35,6 @@ URL may not be reachable for a brief period. This is acceptable; the CLI prints
 the URL and the user can refresh.
 
 The CLI prints this URL and optionally opens it in the default browser.
-
----
-
-## Yolo mode (R-TOOL-3)
-
-Yolo (auto-approve) mode is always enabled. The yolo flag is added to the invoke
-command unconditionally; there is no way to start a session without it.
-
----
-
-## Installation flow
-
-At session creation (or after reset), the daemon checks whether the opencode binary
-is present in the agent layer:
-
-```
-/agent/lib/node_modules/.bin/opencode
-```
-
-If not present, the daemon runs the install command inside the container via
-`docker exec`. This is a blocking operation with progress streamed to the client.
-
-Installation only runs once per agent layer (once per session, or once after reset).
-Subsequent `stop`/`start` cycles skip it.
 
 ---
 

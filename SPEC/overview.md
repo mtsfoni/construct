@@ -213,7 +213,7 @@ The implementation is structured around the following logical modules.
 | `daemon/server` | Listens on the Unix socket, dispatches requests |
 | `daemon/registry` | In-memory + on-disk session state |
 | `daemon/docker` | Wraps Docker API calls (create, start, stop, remove, inspect, logs, exec) |
-| `daemon/session` | Session lifecycle logic (create, attach, stop, destroy, reset) |
+| `daemon/session` | Session lifecycle logic (create, attach, stop, destroy) |
 | `daemon/logbuffer` | Per-session ring-buffer of agent output (R-OBS-4) |
 | `stacks` | Stack image names, embedded Dockerfiles (shared by CLI and daemon binaries), build context extraction |
 | `tools` | opencode install and invoke descriptor |

@@ -21,19 +21,23 @@ sidecar container (dind). Both are managed by the daemon.
 │                                                            │
 │  Bind mounts:                                              │
 │    /home/alice/src/myapp  ←→  /home/alice/src/myapp       │
-│    (exact host path, R-ISO-2, with idmap UID mapping)     │
+│    (exact host path, R-ISO-2)                             │
 │                                                            │
 │    /state/credentials/...  → /run/construct/creds/...      │
 │    (credential files, R-AUTH-1)                            │
 │                                                            │
-│    <opencode-config-dir>  → <opencode-config-dir>  (ro)   │
+│    <opencode-config-dir>  → <opencode-config-dir>  (rw)   │
 │    (host opencode config, R-HOME-1)                       │
 │                                                            │
-│    /state/sessions/<id>/construct-agents.md                │
-│      → /agent/home/.config/opencode/construct-agents.md   │
-│    (injected agent instructions, R-HOME-3)                │
+│    <opencode-data-dir>  → <opencode-data-dir>  (rw)       │
+│    (host opencode data dir, auth.json)                    │
 │                                                            │
-│  Entrypoint: /entrypoint.sh (sources creds, sleeps)       │
+│    /state/sessions/<id>/construct-agents.md                │
+│      → /run/construct/agents.md  (read-only)              │
+│    (entrypoint copies this to opencode config on startup) │
+│                                                            │
+│  Entrypoint: /entrypoint.sh (sources creds, copies        │
+│              agents.md, sleeps)                           │
 │  Agent: launched via docker exec -d                        │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -59,7 +63,7 @@ process (not the host user's home; the host opencode config is separately mounte
 read-only — see `SPEC/config.md`).
 
 This volume survives container recreation and stack image rebuilds (R-LIFE-4).
-It is destroyed only on `session.destroy` or `session.reset`.
+It is destroyed only on `session.destroy` or `construct purge`.
 
 ---
 
@@ -75,19 +79,24 @@ without entrypoint interference.) It runs as PID 1 inside the container.
 set -e
 
 # 1. Source global credential files
-for f in /run/construct/creds/global/*.env 2>/dev/null; do
+for f in /run/construct/creds/global/*.env; do
   [ -f "$f" ] && set -a && source "$f" && set +a
-done
+done 2>/dev/null || true
 
 # 2. Source per-folder credential files (override global)
-for f in /run/construct/creds/folder/*.env 2>/dev/null; do
+for f in /run/construct/creds/folder/*.env; do
   [ -f "$f" ] && set -a && source "$f" && set +a
-done
+done 2>/dev/null || true
 
 # 3. Ensure agent layer directories exist
-mkdir -p /agent/bin /agent/lib /agent/cache /agent/home/.config
+mkdir -p /agent/bin /agent/lib /agent/cache /agent/home/.config/opencode
 
-# 4. Sleep forever — the agent is launched separately via docker exec
+# 4. Copy construct-agents.md into the opencode config dir
+if [ -f /run/construct/agents.md ]; then
+  cp /run/construct/agents.md /agent/home/.config/opencode/construct-agents.md
+fi
+
+# 5. Sleep forever — the agent is launched separately via docker exec
 exec sleep infinity
 ```
 
@@ -96,12 +105,19 @@ Key design points:
 - The entrypoint sources credentials into the process environment. Processes
   launched via `docker exec` in the same container inherit the container's
   environment, so the agent process gets these env vars automatically.
+- Step 4 copies `construct-agents.md` from `/run/construct/agents.md` (a
+  read-only bind mount) into `/agent/home/.config/opencode/`. The file is
+  bound at `/run/construct/agents.md` rather than directly at its final path
+  because Docker cannot bind-mount a file into a path that is itself inside
+  another bind mount (the agent layer volume is mounted at `/agent`). The
+  entrypoint copy happens at container start, before the agent process is
+  launched.
 - `sleep infinity` keeps the container alive. The agent is launched separately
   via `docker exec -d` (see `SPEC/sessions.md`). This allows the agent to be
   stopped and restarted without restarting the container.
 - `set -a` / `set +a` ensures sourced variables are exported.
-- The `2>/dev/null` on the glob handles the case where the credential directory
-  is empty (no `.env` files).
+- The `2>/dev/null || true` on the glob handles the case where the credential
+  directory is empty (no `.env` files).
 
 ---
 
@@ -112,28 +128,33 @@ visible to the agent in a directory that opencode scans for global instructions.
 
 ### Problem
 
-The host opencode config directory is already bind-mounted read-only at
-`<opencode-config-dir>`. Mounting a file *into* a read-only bind mount does not
-work in Docker — a file bind mount cannot overlay a path inside another bind
-mount.
+The agent layer volume is mounted at `/agent`, which covers `/agent/home`.
+A file cannot be bind-mounted directly at a path that sits inside a volume
+mount — Docker cannot overlay a bind mount on top of a volume mount target.
 
 ### Solution
 
-Mount the generated file at `/agent/home/.config/opencode/construct-agents.md`
-instead. This path is inside the agent layer volume (writable), not inside the
-read-only host config mount. The `OPENCODE_CONFIG_DIR` environment variable
-points opencode at the host config dir for reading its primary config.
+The file is bound at a neutral path outside the volume:
 
-opencode reads global instruction files from **both** `OPENCODE_CONFIG_DIR`
+```
+/state/sessions/<short-id>/construct-agents.md  →  /run/construct/agents.md  (read-only)
+```
+
+The entrypoint script then copies it into place at container start:
+
+```bash
+cp /run/construct/agents.md /agent/home/.config/opencode/construct-agents.md
+```
+
+This copy lands inside the agent layer volume (writable), making it visible to
+opencode at `$XDG_CONFIG_HOME/opencode/construct-agents.md`. Because the copy
+happens on every container start (including restarts), the file is always
+up-to-date.
+
+opencode reads global instruction files from both `OPENCODE_CONFIG_DIR`
 (the host config mount) and `$XDG_CONFIG_HOME/opencode/` (which resolves to
 `/agent/home/.config/opencode/`). The construct-agents.md file is picked up
 from the latter path.
-
-The bind mount for this file:
-
-```
-/state/sessions/<short-id>/construct-agents.md  →  /agent/home/.config/opencode/construct-agents.md  (read-only)
-```
 
 ---
 
@@ -156,8 +177,10 @@ keeping `status: running` sessions alive (R-LIFE-1, R-SES-8).
 Exception: debug sessions use restart policy `no` (see `SPEC/sessions.md`).
 
 ### User
-The container process runs as `root` (UID 0) inside the container (R-SEC-2).
-File ownership on the host is handled at the mount level (see UID mapping below).
+The container process runs as the invoking host user's UID:GID (passed by the CLI
+via `host_uid` / `host_gid` in `session.start`). This ensures files written to the
+bind-mounted repo appear with the correct ownership on the host without any UID
+mapping. The daemon sets `User: "<host_uid>:<host_gid>"` in the container config.
 
 ### Mounts
 
@@ -165,14 +188,21 @@ File ownership on the host is handled at the mount level (see UID mapping below)
 |---|---|---|---|
 | `construct-layer-<short-id>` (volume) | `/agent` | read-write | Agent layer |
 | `<canonical-repo-path>` (bind) | `<canonical-repo-path>` | read-write | With idmap (see below) |
-| `<host-opencode-config-dir>` (bind) | `<host-opencode-config-dir>` | read-only | Host opencode config |
+| `<host-opencode-config-dir>` (bind) | `<host-opencode-config-dir>` | read-write | Host opencode config (writable so /connect can persist tokens) |
+| `<host-opencode-data-dir>` (bind) | `<host-opencode-data-dir>` | read-write | Host opencode data dir (auth.json lives here) |
 | `/state/credentials/global/` (bind) | `/run/construct/creds/global/` | read-only | Global credentials |
 | `/state/credentials/folders/<slug>/` (bind) | `/run/construct/creds/folder/` | read-only | Per-folder credentials |
-| `/state/sessions/<short-id>/construct-agents.md` (bind) | `/agent/home/.config/opencode/construct-agents.md` | read-only | Injected instructions |
+| `/state/sessions/<short-id>/agents.md` (bind) | `/run/construct/agents.md` | read-only | Injected instructions |
 
 `<host-opencode-config-dir>` is the resolved host opencode config path
 (`$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`), passed to the daemon by
 the CLI at session creation time.
+
+`<host-opencode-data-dir>` is the resolved host opencode data path
+(`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`), also passed to the
+daemon by the CLI. opencode writes `auth.json` here; mounting it read-write
+ensures tokens written by an in-container auth flow persist to the host and are
+shared across all sessions.
 
 The per-folder credentials directory is always mounted, even if empty. The daemon
 creates an empty directory for the folder slug at session start if it doesn't
@@ -190,6 +220,7 @@ sourced by the entrypoint (R-AUTH-1). Standard env vars set in the container:
 | `HOME` | `/agent/home` |
 | `PATH` | `/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` |
 | `XDG_CONFIG_HOME` | `/agent/home/.config` |
+| `XDG_DATA_HOME` | Parent of the host opencode data dir (e.g. `~/.local/share`) |
 | `OPENCODE_CONFIG_DIR` | Resolved host opencode config path |
 | `CONSTRUCT_SESSION_ID` | Session UUID |
 | `CONSTRUCT_REPO` | Canonical repo path |
@@ -216,84 +247,20 @@ be changed without destroying and recreating the container.
 
 ---
 
-## UID mapping for folder bind-mount (R-LIFE-3, R-SEC-3)
+## File ownership on the host
 
-The agent runs as root (UID 0) inside the container, but files written to the
-bind-mounted folder must appear with the host invoking user's UID/GID on the host.
+Because the container runs as the host user's UID:GID directly (set via `User`
+at container creation), files written to the bind-mounted repo folder appear
+with the correct host ownership automatically. No idmap or user-namespace
+remapping is needed.
 
-This is achieved via Docker's **idmap mount** feature, available since Linux
-kernel 5.12 (April 2021) and Docker 25.0 (January 2024).
+The CLI reads `os.Getuid()` and `os.Getgid()` and passes these to the daemon in
+`host_uid` / `host_gid`. The daemon stores them in the session record so that
+container recreation on restart uses the same values.
 
-### Requirements
-
-- **Linux kernel 5.12 or later** (released April 2021)
-- **Docker Engine 25.0 or later** (released January 2024)
-
-If either requirement is not met, construct exits with an error message
-explaining the minimum versions required. No fallback mechanism is provided.
-Both versions are over 2 years old at time of writing; this is a hard
-requirement (R-PLAT-2).
-
-### Version detection
-
-The CLI checks these requirements during the bootstrap sequence (before
-creating the daemon container):
-
-- **Kernel version**: Read from `uname -r` (or `syscall.Uname` in Go).
-  Parse the major.minor version and compare against 5.12.
-- **Docker version**: Call `docker version --format '{{.Server.Version}}'`
-  (or use the Docker SDK's `ServerVersion()` call). Parse the major version
-  and compare against 25.
-
-If either check fails, the CLI prints:
-
-```
-Error: construct requires Linux kernel >= 5.12 and Docker >= 25.0.
-  Kernel: <detected> (need >= 5.12)
-  Docker: <detected> (need >= 25.0)
-```
-
-and exits with code 1.
-
-### Mechanism
-
-The daemon is passed the invoking user's UID and GID at session creation time
-(from the CLI, which reads them from `os.Getuid()` / `os.Getgid()`).
-
-The daemon creates the session container with an idmap mount on the folder
-bind. In the Docker Go SDK, this is configured via the mount spec:
-
-```go
-mount.Mount{
-    Type:   mount.TypeBind,
-    Source: folderPath,
-    Target: folderPath,
-    BindOptions: &mount.BindOptions{
-        CreateMountpoint: true,
-        // Idmap mount: maps container root (UID 0) to host UID
-        // Available in Docker SDK since API version 1.44 (Docker 25.0)
-        IDMapping: &mount.IDMapping{
-            UIDMappings: []mount.IDMap{
-                {ContainerID: 0, HostID: hostUID, Size: 1},
-            },
-            GIDMappings: []mount.IDMap{
-                {ContainerID: 0, HostID: hostGID, Size: 1},
-            },
-        },
-    },
-}
-```
-
-Inside the container, the folder appears owned by root:root. Outside, files created
-by root inside map to the host user's UID:GID.
-
-This entire mechanism is transparent to the user; they never need to configure it.
-
-### Scope of idmap
-
-The idmap is applied **only** to the folder bind mount. The agent layer volume
-(`/agent`) and credential mounts do not use idmap — they are internal to
-construct and host file ownership is irrelevant for them.
+If the stored UID/GID differ from the current caller's values (e.g. the session
+was created by a different user), the daemon recreates the container with the new
+values rather than reusing the old one.
 
 ---
 
@@ -326,18 +293,12 @@ When `docker_mode = dood`:
 
 1. The host Docker socket `/var/run/docker.sock` is bind-mounted into the agent
    container at `/var/run/docker.sock`.
-2. The Docker socket group GID from the host is added to the container via
-   `--group-add <gid>`. The daemon reads the GID of `/var/run/docker.sock` on
-   the host (via `os.Stat` → `Sys().Gid`) and passes it. This ensures the agent
-   (running as root) can access the socket even if the socket has restrictive
-   group permissions.
-3. On systems with SELinux enabled, `--security-opt label=disable` is added to
-   the container to prevent SELinux from blocking access to the host Docker
-   socket. The daemon detects SELinux by checking if `/sys/fs/selinux` exists
-   and is mounted.
-4. The user accepts the risk explicitly (R-ISO-5).
-5. No special network or sidecar is created.
-6. A warning is printed by the CLI at session start: "dood mode gives the agent
+2. `--security-opt label=disable` is added to the container unconditionally to
+   prevent SELinux from blocking access to the host Docker socket on systems
+   where SELinux is enforcing.
+3. The user accepts the risk explicitly (R-ISO-5).
+4. No special network or sidecar is created.
+5. A warning is printed by the CLI at session start: "dood mode gives the agent
    full access to the host Docker daemon."
 
 ---

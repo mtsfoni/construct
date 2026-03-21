@@ -1,6 +1,5 @@
 // Package platform checks host platform requirements before bootstrapping.
-// construct requires Linux kernel ≥ 5.12 (for idmap mounts) and Docker ≥ 25.0
-// (for API v1.44 which exposes IDMapping in BindOptions).
+// construct requires Linux kernel 5.12 or later and Docker Engine 25.0 or later.
 package platform
 
 import (
@@ -12,8 +11,8 @@ import (
 )
 
 // Check verifies that the host meets the minimum platform requirements:
-//   - Linux kernel ≥ 5.12  (idmap mounts)
-//   - Docker Engine ≥ 25.0 (API v1.44, IDMapping in BindOptions)
+//   - Linux kernel ≥ 5.12
+//   - Docker Engine ≥ 25.0
 //
 // dockerVersion should be the string returned by docker.ServerVersion()
 // (e.g. "28.5.2"). Pass "" to skip the Docker version check (useful in tests).
@@ -42,7 +41,7 @@ func checkKernel() error {
 	}
 	if major < 5 || (major == 5 && minor < 12) {
 		return fmt.Errorf(
-			"construct requires Linux kernel ≥ 5.12 for idmap mounts; running %d.%d",
+			"construct requires Linux kernel ≥ 5.12; running %d.%d",
 			major, minor,
 		)
 	}
@@ -57,7 +56,7 @@ func checkDockerVersion(version string) error {
 	}
 	if major < 25 || (major == 25 && minor < 0) {
 		return fmt.Errorf(
-			"construct requires Docker Engine ≥ 25.0 (API v1.44); running %s",
+			"construct requires Docker Engine ≥ 25.0; running %s",
 			version,
 		)
 	}
