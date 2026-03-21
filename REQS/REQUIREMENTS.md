@@ -291,15 +291,18 @@ CLI is invoked, the CLI starts it.
 The agent container never runs with --privileged. Only the dind sidecar (when used)
 requires --privileged.
 
-### R-SEC-2 — Root inside the container is acceptable
-The agent runs as root inside the container. The container boundary provides the
-isolation, not the Unix user. This simplifies tool installation (R-LIFE-2) and
-avoids permission headaches.
+### R-SEC-2 — Passwordless sudo inside the container is acceptable
+The agent runs as the host user's UID inside the container but has full
+passwordless `sudo` access. The container boundary provides the isolation, not
+the Unix user. This allows the agent to install system packages via
+`sudo apt-get install` when needed, while still writing files to the repo as the
+correct host-owned UID.
 
-### R-SEC-3 — File ownership on host is the invoking user (not root)
-Despite R-SEC-2, files written to the bind-mounted repo must land with the host
-user's UID/GID. The container achieves this by mapping UIDs appropriately at the
-mount level, not by running the agent as a non-root user.
+### R-SEC-3 — File ownership on host is the invoking user
+Files written to the bind-mounted repo must land with the host user's UID/GID.
+The agent exec runs as the host user's UID:GID (set via `--user` on `docker exec`),
+so ownership is correct automatically without UID mapping or user-namespace
+remapping.
 
 ### R-SEC-4 — Not a hardened sandbox
 construct is not a CVE-proof container escape preventer. It is a meaningful step up

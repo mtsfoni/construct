@@ -627,7 +627,6 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 
 	cfg := &container.Config{
 		Image:        stacks.ImageName(s.Stack),
-		User:         fmt.Sprintf("%d:%d", s.HostUID, s.HostGID),
 		Env:          env,
 		ExposedPorts: nat.PortSet(exposedPorts),
 	}
@@ -689,6 +688,7 @@ func (m *Manager) startAgent(ctx context.Context, s *registry.Session) error {
 	cmd := tools.InvokeCommand(s.Tool, tools.WebPort)
 	execResp, err := m.docker.ContainerExecCreate(ctx, s.ContainerName, container.ExecOptions{
 		Cmd:          cmd,
+		User:         fmt.Sprintf("%d:%d", s.HostUID, s.HostGID),
 		AttachStdout: false,
 		AttachStderr: false,
 	})
@@ -825,6 +825,8 @@ func buildEnv(s *registry.Session, shortID string) []string {
 		fmt.Sprintf("CONSTRUCT_STACK=%s", s.Stack),
 		fmt.Sprintf("CONSTRUCT_DOCKER_MODE=%s", s.DockerMode),
 		fmt.Sprintf("CONSTRUCT_PORTS=%s", formatPorts(s.Ports)),
+		fmt.Sprintf("CONSTRUCT_UID=%d", s.HostUID),
+		fmt.Sprintf("CONSTRUCT_GID=%d", s.HostGID),
 	}
 	if s.DockerMode == "dind" {
 		env = append(env, fmt.Sprintf("DOCKER_HOST=tcp://construct-dind-%s:2375", shortID))

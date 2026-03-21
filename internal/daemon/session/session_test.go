@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -45,6 +46,10 @@ type fakeDocker struct {
 	execCounter int
 	// lastContainerConfig is the most recent container.Config passed to ContainerCreate
 	lastContainerConfig *container.Config
+	// lastExecOptions is the most recent ExecOptions passed to ContainerExecCreate
+	lastExecOptions *container.ExecOptions
+	// allExecOptions is all ExecOptions passed to ContainerExecCreate
+	allExecOptions []container.ExecOptions
 }
 
 func newFakeDocker() *fakeDocker {
@@ -99,13 +104,15 @@ func (f *fakeDocker) ContainerInspect(_ context.Context, _ string) (types.Contai
 	return types.ContainerJSON{}, nil
 }
 
-func (f *fakeDocker) ContainerExecCreate(_ context.Context, _ string, _ container.ExecOptions) (types.IDResponse, error) {
+func (f *fakeDocker) ContainerExecCreate(_ context.Context, _ string, opts container.ExecOptions) (types.IDResponse, error) {
 	f.record("ContainerExecCreate")
 	if err := f.errors["ContainerExecCreate"]; err != nil {
 		return types.IDResponse{}, err
 	}
 	f.execCounter++
 	id := "exec-" + string(rune('0'+f.execCounter))
+	f.lastExecOptions = &opts
+	f.allExecOptions = append(f.allExecOptions, opts)
 	return types.IDResponse{ID: id}, nil
 }
 
@@ -498,14 +505,28 @@ func TestSession_RestartUpdatesUIDGID(t *testing.T) {
 		t.Errorf("HostGID = %d, want 2000", res2.Session.HostGID)
 	}
 
-	// The container was removed and recreated; lastContainerConfig should
-	// reflect the new User field.
-	wantUser := "2000:2000"
+	// The container was removed and recreated; it must run as root (no User
+	// field) and pass the new UID/GID via env vars.
 	if fd.lastContainerConfig == nil {
 		t.Fatal("expected ContainerCreate to have been called")
 	}
-	if fd.lastContainerConfig.User != wantUser {
-		t.Errorf("container User = %q, want %q", fd.lastContainerConfig.User, wantUser)
+	if fd.lastContainerConfig.User != "" {
+		t.Errorf("container User = %q, want empty (root)", fd.lastContainerConfig.User)
+	}
+	var hasUID, hasGID bool
+	for _, e := range fd.lastContainerConfig.Env {
+		if e == "CONSTRUCT_UID=2000" {
+			hasUID = true
+		}
+		if e == "CONSTRUCT_GID=2000" {
+			hasGID = true
+		}
+	}
+	if !hasUID {
+		t.Error("env missing CONSTRUCT_UID=2000")
+	}
+	if !hasGID {
+		t.Error("env missing CONSTRUCT_GID=2000")
 	}
 
 	// Container should be running.
@@ -673,6 +694,8 @@ func TestSession_BuildEnv(t *testing.T) {
 		{"CONSTRUCT_TOOL", s.Tool},
 		{"CONSTRUCT_STACK", s.Stack},
 		{"CONSTRUCT_DOCKER_MODE", s.DockerMode},
+		{"CONSTRUCT_UID", "0"},
+		{"CONSTRUCT_GID", "0"},
 	}
 	for _, c := range checks {
 		if !has(c[0], c[1]) {
@@ -953,21 +976,20 @@ func TestSession_SavesQuickstart(t *testing.T) {
 	}
 }
 
-// TestSession_ContainerUserIsHostUID verifies that createContainer sets the
-// container User field to "uid:gid" matching the host user that started the
-// session. This is the mechanism that ensures files written by the agent inside
-// the container are owned by the invoking user on the host filesystem.
+// TestSession_ContainerUserIsHostUID verifies that the container runs as root
+// (so the entrypoint can register the UID in /etc/passwd for sudo), that
+// CONSTRUCT_UID/CONSTRUCT_GID env vars carry the host UID/GID into the
+// container, and that the agent exec is launched as the host user.
 func TestSession_ContainerUserIsHostUID(t *testing.T) {
 	tests := []struct {
-		name     string
-		uid      int
-		gid      int
-		wantUser string
+		name string
+		uid  int
+		gid  int
 	}{
-		{"typical user", 1000, 1000, "1000:1000"},
-		{"root", 0, 0, "0:0"},
-		{"uid gid differ", 1001, 1002, "1001:1002"},
-		{"high uid", 65534, 65534, "65534:65534"},
+		{"typical user", 1000, 1000},
+		{"root", 0, 0},
+		{"uid gid differ", 1001, 1002},
+		{"high uid", 65534, 65534},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -985,8 +1007,52 @@ func TestSession_ContainerUserIsHostUID(t *testing.T) {
 			if fd.lastContainerConfig == nil {
 				t.Fatal("ContainerCreate was never called")
 			}
-			if fd.lastContainerConfig.User != tt.wantUser {
-				t.Errorf("container User = %q, want %q", fd.lastContainerConfig.User, tt.wantUser)
+			// Container must run as root so the entrypoint can register the
+			// host UID in /etc/passwd before dropping privileges via gosu.
+			if fd.lastContainerConfig.User != "" {
+				t.Errorf("container User = %q, want empty (root)", fd.lastContainerConfig.User)
+			}
+
+			// CONSTRUCT_UID / CONSTRUCT_GID must be present in the env so the
+			// entrypoint knows which user to register and drop to.
+			wantUID := fmt.Sprintf("CONSTRUCT_UID=%d", tt.uid)
+			wantGID := fmt.Sprintf("CONSTRUCT_GID=%d", tt.gid)
+			var hasUID, hasGID bool
+			for _, e := range fd.lastContainerConfig.Env {
+				if e == wantUID {
+					hasUID = true
+				}
+				if e == wantGID {
+					hasGID = true
+				}
+			}
+			if !hasUID {
+				t.Errorf("env missing %s", wantUID)
+			}
+			if !hasGID {
+				t.Errorf("env missing %s", wantGID)
+			}
+
+			// The agent exec must be launched as the host user. The log-tail
+			// exec (also created by startAgent) does not set User, so we look
+			// for the exec whose User field matches the expected value.
+			wantExecUser := fmt.Sprintf("%d:%d", tt.uid, tt.gid)
+			var foundExecUser bool
+			for _, opts := range fd.allExecOptions {
+				if opts.User == wantExecUser {
+					foundExecUser = true
+					break
+				}
+			}
+			if !foundExecUser {
+				t.Errorf("no exec with User=%q found; all exec users: %v",
+					wantExecUser, func() []string {
+						var users []string
+						for _, o := range fd.allExecOptions {
+							users = append(users, o.User)
+						}
+						return users
+					}())
 			}
 		})
 	}

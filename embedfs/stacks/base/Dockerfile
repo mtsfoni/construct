@@ -15,7 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-venv \
     build-essential \
+    sudo \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
+
+# Grant passwordless sudo to any user — this is a single-tenant container and
+# the container boundary is the security perimeter. This lets the agent run
+# apt-get install and other root operations without a password.
+RUN echo 'ALL ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/agent \
+    && chmod 0440 /etc/sudoers.d/agent
 
 # Install Docker CLI (no daemon)
 RUN install -m 0755 -d /etc/apt/keyrings \

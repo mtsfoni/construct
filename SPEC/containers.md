@@ -49,13 +49,13 @@ the container. It stores everything the agent installs during its sessions:
 
 ```
 /agent/
-├── bin/        # Installed tool binaries (opencode, etc.)
+├── bin/        # Installed tool binaries (on PATH)
 ├── lib/        # npm global modules, Go binaries, pip user installs, etc.
 ├── cache/      # Build caches (npm cache, cargo registry, etc.) — optional
 └── home/       # Agent home directory overlay (shell history, tool configs)
     └── .config/
         └── opencode/
-            └── construct-agents.md  (bind-mounted, read-only)
+            └── opencode.json  (written by entrypoint; references /run/construct/agents.md)
 ```
 
 `/agent/bin` is prepended to `PATH`. `/agent/home` is the `$HOME` for the agent
@@ -72,89 +72,119 @@ It is destroyed only on `session.destroy` or `construct purge`.
 The base stack image includes a startup script at `/entrypoint.sh`. This script
 is set as the container's default command via `CMD ["/entrypoint.sh"]` in the
 Dockerfile. (Docker's `ENTRYPOINT` is not used, so `docker exec` commands run
-without entrypoint interference.) It runs as PID 1 inside the container.
+without entrypoint interference.) It runs as PID 1 inside the container **as
+root**, because it needs to register the host UID in `/etc/passwd` before
+dropping privileges.
 
 ```bash
 #!/bin/bash
 set -e
 
-# 1. Source global credential files
+AGENT_UID=${CONSTRUCT_UID:-1000}
+AGENT_GID=${CONSTRUCT_GID:-1000}
+
+# Register the group and user so that sudo can resolve the UID.
+if ! getent group "$AGENT_GID" > /dev/null 2>&1; then
+    groupadd --gid "$AGENT_GID" agent
+fi
+if ! getent passwd "$AGENT_UID" > /dev/null 2>&1; then
+    useradd --uid "$AGENT_UID" --gid "$AGENT_GID" \
+        --home /agent/home --no-create-home --shell /bin/bash agent
+fi
+
+# Source global and per-folder credential files.
 for f in /run/construct/creds/global/*.env; do
   [ -f "$f" ] && set -a && source "$f" && set +a
 done 2>/dev/null || true
-
-# 2. Source per-folder credential files (override global)
 for f in /run/construct/creds/folder/*.env; do
   [ -f "$f" ] && set -a && source "$f" && set +a
 done 2>/dev/null || true
 
-# 3. Ensure agent layer directories exist
+# Ensure agent layer directories exist, owned by the agent user.
 mkdir -p /agent/bin /agent/lib /agent/cache /agent/home/.config/opencode
+chown -R "$AGENT_UID:$AGENT_GID" /agent/home /agent/bin /agent/lib /agent/cache 2>/dev/null || true
 
-# 4. Copy construct-agents.md into the opencode config dir
-if [ -f /run/construct/agents.md ]; then
-  cp /run/construct/agents.md /agent/home/.config/opencode/construct-agents.md
-fi
+# Write opencode.json with construct context and autoupdate disabled.
+cat > /agent/home/.config/opencode/opencode.json <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "instructions": ["/run/construct/agents.md"]
+}
+EOF
+chown "$AGENT_UID:$AGENT_GID" /agent/home/.config/opencode/opencode.json
 
-# 5. Sleep forever — the agent is launched separately via docker exec
-exec sleep infinity
+# Drop to the host user and sleep forever — the agent is launched separately
+# via docker exec (with --user uid:gid). gosu handles the privilege drop.
+exec gosu "$AGENT_UID:$AGENT_GID" sleep infinity
 ```
 
 Key design points:
 
-- The entrypoint sources credentials into the process environment. Processes
-  launched via `docker exec` in the same container inherit the container's
-  environment, so the agent process gets these env vars automatically.
-- Step 4 copies `construct-agents.md` from `/run/construct/agents.md` (a
-  read-only bind mount) into `/agent/home/.config/opencode/`. The file is
-  bound at `/run/construct/agents.md` rather than directly at its final path
-  because Docker cannot bind-mount a file into a path that is itself inside
-  another bind mount (the agent layer volume is mounted at `/agent`). The
-  entrypoint copy happens at container start, before the agent process is
-  launched.
-- `sleep infinity` keeps the container alive. The agent is launched separately
-  via `docker exec -d` (see `SPEC/sessions.md`). This allows the agent to be
-  stopped and restarted without restarting the container.
-- `set -a` / `set +a` ensures sourced variables are exported.
-- The `2>/dev/null || true` on the glob handles the case where the credential
-  directory is empty (no `.env` files).
+- The entrypoint runs as root initially. This is required to call `useradd` and
+  register the host UID in `/etc/passwd`. `sudo` on Debian performs a `getpwuid`
+  lookup and refuses to run if the UID is unknown.
+- `CONSTRUCT_UID` and `CONSTRUCT_GID` are injected as env vars by the daemon so
+  the entrypoint knows which UID/GID to register (see env var table below).
+- After setup, `gosu uid:gid sleep infinity` drops to the host user for the
+  parked process. All subsequent `docker exec` commands (including the agent)
+  run as the host user via `--user uid:gid`.
+- `gosu` is used instead of `su` or `sudo` because it does a clean exec without
+  spawning a shell, making it suitable for PID 1.
+- `set -a` / `set +a` ensures sourced credential variables are exported.
+- The `2>/dev/null || true` on the glob handles empty credential directories.
+- The opencode.json `instructions` field references `/run/construct/agents.md`
+  directly (the bind-mounted construct context file). No copy is needed; opencode
+  reads the file at runtime via this config.
 
 ---
 
-## Construct-agents.md mount strategy
+## Construct-agents.md injection strategy
 
 The `construct-agents.md` file (generated per-session by the daemon) must be
-visible to the agent in a directory that opencode scans for global instructions.
+visible to the agent in a way that opencode includes it in its global
+instructions.
 
-### Problem
+### Approach
 
-The agent layer volume is mounted at `/agent`, which covers `/agent/home`.
-A file cannot be bind-mounted directly at a path that sits inside a volume
-mount — Docker cannot overlay a bind mount on top of a volume mount target.
-
-### Solution
-
-The file is bound at a neutral path outside the volume:
+The file is bind-mounted at a neutral path outside the agent layer volume:
 
 ```
 /state/sessions/<short-id>/construct-agents.md  →  /run/construct/agents.md  (read-only)
 ```
 
-The entrypoint script then copies it into place at container start:
+The entrypoint writes `/agent/home/.config/opencode/opencode.json` (inside the
+agent layer volume) with an `instructions` field that references this path
+directly:
 
-```bash
-cp /run/construct/agents.md /agent/home/.config/opencode/construct-agents.md
+```json
+{
+  "instructions": ["/run/construct/agents.md"]
+}
 ```
 
-This copy lands inside the agent layer volume (writable), making it visible to
-opencode at `$XDG_CONFIG_HOME/opencode/construct-agents.md`. Because the copy
-happens on every container start (including restarts), the file is always
-up-to-date.
+opencode reads this config file at startup and loads the construct context from
+the bind-mounted path. No copy is needed.
 
-opencode reads global instruction files from both `OPENCODE_CONFIG_DIR`
-(the host config mount) and `$XDG_CONFIG_HOME/opencode/` (which resolves to
-`/agent/home/.config/opencode/`). The construct-agents.md file is picked up
-from the latter path.
+### Why not bind-mount directly into the opencode config dir
+
+Docker cannot overlay a bind mount on top of a volume mount target. Since the
+agent layer volume is mounted at `/agent`, individual files within `/agent`
+cannot also be bind-mounted. The neutral path `/run/construct/agents.md` avoids
+this constraint. opencode accesses it via the `instructions` reference in the
+config, not by directory scanning.
+
+### How opencode picks up both host config and construct context
+
+opencode merges configuration from multiple sources. The container has:
+- `OPENCODE_CONFIG_DIR` pointing at the host opencode config dir (bind-mounted)
+  — picks up the user's models, skills, slash commands, AGENTS.md, etc.
+- `OPENCODE_CONFIG_CONTENT={"permission":"allow"}` — enforces yolo/auto-approve
+  mode regardless of host config.
+- `/agent/home/.config/opencode/opencode.json` (written by entrypoint) — adds
+  the construct instructions and disables auto-update.
+
+All three are merged by opencode; the user's global configuration is preserved.
 
 ---
 
@@ -177,10 +207,16 @@ keeping `status: running` sessions alive (R-LIFE-1, R-SES-8).
 Exception: debug sessions use restart policy `no` (see `SPEC/sessions.md`).
 
 ### User
-The container process runs as the invoking host user's UID:GID (passed by the CLI
-via `host_uid` / `host_gid` in `session.start`). This ensures files written to the
-bind-mounted repo appear with the correct ownership on the host without any UID
-mapping. The daemon sets `User: "<host_uid>:<host_gid>"` in the container config.
+
+The container is created **without** a `User` field — it starts as root so the
+entrypoint can register the host UID in `/etc/passwd` (required for `sudo` to
+work) and then drop privileges via `gosu`. The host UID/GID are passed via the
+`CONSTRUCT_UID` / `CONSTRUCT_GID` env vars (see env var table below).
+
+The agent process (and all `docker exec` operations) run as the host user's
+UID:GID by setting `User: "<host_uid>:<host_gid>"` on the `docker exec` call,
+not on the container itself. This ensures files written to the bind-mounted repo
+appear with the correct ownership on the host.
 
 ### Mounts
 
@@ -222,12 +258,15 @@ sourced by the entrypoint (R-AUTH-1). Standard env vars set in the container:
 | `XDG_CONFIG_HOME` | `/agent/home/.config` |
 | `XDG_DATA_HOME` | Parent of the host opencode data dir (e.g. `~/.local/share`) |
 | `OPENCODE_CONFIG_DIR` | Resolved host opencode config path |
+| `OPENCODE_CONFIG_CONTENT` | `{"permission":"allow"}` — enforces yolo/auto-approve mode |
 | `CONSTRUCT_SESSION_ID` | Session UUID |
 | `CONSTRUCT_REPO` | Canonical repo path |
 | `CONSTRUCT_TOOL` | Tool name |
 | `CONSTRUCT_STACK` | Stack name |
 | `CONSTRUCT_DOCKER_MODE` | `none`, `dind`, or `dood` |
 | `CONSTRUCT_PORTS` | Comma-separated `<host_port>:<container_port>` pairs (e.g. `3000:3000,4096:4096`) |
+| `CONSTRUCT_UID` | Host user UID — read by entrypoint to register the user in `/etc/passwd` |
+| `CONSTRUCT_GID` | Host user GID — read by entrypoint to register the group in `/etc/group` |
 | `DOCKER_HOST` | `tcp://construct-dind-<short-id>:2375` — **dind mode only**; not set in `none` or `dood` modes |
 | `NPM_CONFIG_PREFIX` | `/agent` — directs `npm install -g` to install into `/agent/lib/node_modules/` with binaries symlinked to `/agent/bin/` |
 
@@ -249,14 +288,17 @@ be changed without destroying and recreating the container.
 
 ## File ownership on the host
 
-Because the container runs as the host user's UID:GID directly (set via `User`
-at container creation), files written to the bind-mounted repo folder appear
-with the correct host ownership automatically. No idmap or user-namespace
-remapping is needed.
+Because the agent exec runs as the host user's UID:GID (set via `User` on
+`docker exec`, not on the container), files written to the bind-mounted repo
+folder appear with the correct host ownership automatically. No idmap or
+user-namespace remapping is needed.
 
 The CLI reads `os.Getuid()` and `os.Getgid()` and passes these to the daemon in
-`host_uid` / `host_gid`. The daemon stores them in the session record so that
-container recreation on restart uses the same values.
+`host_uid` / `host_gid`. The daemon stores them in the session record and:
+1. Passes them as `CONSTRUCT_UID` / `CONSTRUCT_GID` env vars to the container
+   so the entrypoint can register the user in `/etc/passwd`.
+2. Sets `User: "<host_uid>:<host_gid>"` on all `docker exec` calls (agent
+   launch, log tail, etc.) so processes run as the host user.
 
 If the stored UID/GID differ from the current caller's values (e.g. the session
 was created by a different user), the daemon recreates the container with the new

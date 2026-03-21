@@ -88,6 +88,8 @@ All stacks inherit from the base image. The base image provides (R-STACK-2):
 | Python 3 | Distribution package (`python3`, `pip3`) |
 | curl, wget, unzip, tar | Distribution packages |
 | bash, zsh | Both available |
+| sudo | Distribution package — passwordless for any user |
+| gosu | Distribution package — used by entrypoint for privilege drop |
 
 ### Why these are in base
 
@@ -104,14 +106,20 @@ The base image includes `/entrypoint.sh` (copied into the image by the
 Dockerfile). This script is set as the container's default command via
 `CMD ["/entrypoint.sh"]` (Docker's `ENTRYPOINT` is not used). It:
 
-1. Sources all credential `.env` files from `/run/construct/creds/global/` and
+1. Registers the host UID/GID (from `CONSTRUCT_UID` / `CONSTRUCT_GID` env
+   vars) in `/etc/passwd` and `/etc/group` so that `sudo` can resolve the user.
+2. Sources all credential `.env` files from `/run/construct/creds/global/` and
    `/run/construct/creds/folder/` (per-folder overrides global).
-2. Creates agent layer directories (`/agent/bin`, `/agent/lib`, `/agent/cache`,
-   `/agent/home/.config`).
-3. Runs `exec sleep infinity` to keep the container alive.
+3. Creates agent layer directories (`/agent/bin`, `/agent/lib`, `/agent/cache`,
+   `/agent/home/.config/opencode`) and chowns them to the host user.
+4. Writes `/agent/home/.config/opencode/opencode.json` with construct context
+   injection (`instructions: ["/run/construct/agents.md"]`) and
+   `autoupdate: false`.
+5. Drops to the host user via `gosu uid:gid` and runs `exec sleep infinity` to
+   keep the container alive.
 
-The agent process is launched separately via `docker exec -d` by the daemon
-(see `SPEC/sessions.md`). The full startup script is defined in
+The agent process is launched separately via `docker exec -d --user uid:gid` by
+the daemon (see `SPEC/sessions.md`). The full startup script is defined in
 `SPEC/containers.md`.
 
 ### Agent layer hooks in base
@@ -214,17 +222,25 @@ embedded Dockerfile and build context to a temp directory and runs `docker build
 
 ---
 
-## Tool installation without sudo (R-LIFE-2)
+## Tool installation (R-LIFE-2)
 
-Since the agent runs as root inside the container, there is no sudo requirement.
-The agent can install to any path. construct directs agent-installed tools to
-`/agent/bin` and `/agent/lib` via the `PATH` and `NPM_CONFIG_PREFIX` environment
-variables (see `SPEC/containers.md` for the full env var list).
+The agent runs as the host user's UID inside the container, but has full
+passwordless `sudo` access (granted to any user via `/etc/sudoers.d/agent`).
+This means:
 
-Standard package manager commands work normally:
-- `npm install -g <pkg>` — installs to `/agent/lib/node_modules/.bin`
-- `pip install --user <pkg>` — installs to `/agent/home/.local/bin`
-- `go install <pkg>` — installs to `/agent/lib/go/bin`
-- `curl ... | sh` — whatever the script does, running as root in `/agent/`
+- Standard package manager commands work without sudo, directed to the agent
+  layer volume by environment variables:
+  - `npm install -g <pkg>` → `/agent/lib/node_modules/.bin` (via `NPM_CONFIG_PREFIX=/agent`)
+  - `pip install --user <pkg>` → `/agent/home/.local/bin` (via `HOME=/agent/home`)
+  - `go install <pkg>` → `/agent/lib/go/bin` (via `GOPATH`)
+- System package installation works via sudo:
+  - `sudo apt-get install <pkg>` — installs system-wide (image layer, not persistent)
 
-All of these land in the agent layer volume and survive restarts and image rebuilds.
+All agent layer installs land in the agent layer volume and survive restarts and
+image rebuilds (R-LIFE-4). System packages installed via `sudo apt-get` do not
+persist across container recreation (they live in the container's writable layer),
+but persist across stop/start cycles.
+
+The `sudo` / `gosu` binaries are installed in the base image. Passwordless sudo
+is safe here because this is a single-tenant container: the container boundary is
+the security perimeter (R-SEC-4).
