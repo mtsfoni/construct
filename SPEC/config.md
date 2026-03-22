@@ -150,7 +150,7 @@ any other per-session daemon-side state.
 | What | Host path | Container path | Mode |
 |---|---|---|---|
 | opencode global config dir | `$XDG_CONFIG_HOME/opencode/` (or `~/.config/opencode/`) | same as host path | read-write |
-| opencode data dir | `$XDG_DATA_HOME/opencode/` (or `~/.local/share/opencode/`) | same as host path | read-write |
+| opencode data dir | `$XDG_DATA_HOME/opencode/` (or `~/.local/share/opencode/`) | `/agent/home/.local/share/opencode/` | read-write |
 | construct injected instructions | `~/.config/construct/sessions/<id>/construct-agents.md` | `/run/construct/agents.md` (read-only bind); loaded via `instructions` in entrypoint-written `opencode.json` | read-only bind |
 | Agent's writable home | (volume) | `/agent/home/` | read-write |
 | Repo | `<repo>` | `<repo>` (same path) | read-write |
@@ -163,7 +163,6 @@ any other per-session daemon-side state.
 |---|---|---|
 | `HOME` | `/agent/home` | Agent writes go to the persistent agent layer |
 | `XDG_CONFIG_HOME` | `/agent/home/.config` | Overrides XDG default so opencode config writes land in agent layer |
-| `XDG_DATA_HOME` | host opencode data dir parent (e.g. `~/.local/share`) | Points XDG data resolution at the host-mounted data directory |
 | `OPENCODE_CONFIG_DIR` | resolved host opencode config path (e.g. `~/.config/opencode`) | Points opencode at the host config for reading |
 | `OPENCODE_CONFIG_CONTENT` | `{"permission":"allow"}` | Highest-precedence config override; enforces auto-approve (yolo) mode |
 
@@ -171,13 +170,19 @@ The CLI resolves the host opencode config path by checking `$XDG_CONFIG_HOME/ope
 (falling back to `~/.config/opencode`) and passes it to the daemon. The daemon
 sets `OPENCODE_CONFIG_DIR` in the container to this resolved path.
 
-`XDG_DATA_HOME` is set to `filepath.Dir(opencode_data_dir)` (e.g. if
-`opencode_data_dir` is `~/.local/share/opencode`, then `XDG_DATA_HOME` is
-`~/.local/share`). This causes opencode to resolve its data path as
-`$XDG_DATA_HOME/opencode/`, which maps to the bind-mounted host data directory.
+`XDG_DATA_HOME` is **not** set. With `HOME=/agent/home`, the XDG default for
+the data home is `$HOME/.local/share` = `/agent/home/.local/share`. The host
+opencode data directory is bind-mounted at
+`/agent/home/.local/share/opencode` (see mounts table in `SPEC/containers.md`),
+so opencode resolves its data path naturally without any override.
+
+This avoids the NU1900 problem that occurred when `XDG_DATA_HOME` was set to
+the host path parent: NuGet (and other XDG-aware tools) also honour
+`XDG_DATA_HOME`, causing them to try to write to unmounted host paths inside
+the container.
 
 The result: opencode reads global config from `OPENCODE_CONFIG_DIR` (the
 host config mount, read-write), and reads/writes data (auth tokens, session
-state) to the host data directory via the `XDG_DATA_HOME` mount. Both mounts
-are read-write, so both config and data changes from within the container
-persist on the host (R-HOME-1, R-AUTH-2).
+state) to the host data directory via the natural `$HOME/.local/share/opencode`
+mount. Both mounts are read-write, so both config and data changes from within
+the container persist on the host (R-HOME-1, R-AUTH-2).

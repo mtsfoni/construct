@@ -29,7 +29,7 @@ sidecar container (dind). Both are managed by the daemon.
 │    <opencode-config-dir>  → <opencode-config-dir>  (rw)   │
 │    (host opencode config, R-HOME-1)                       │
 │                                                            │
-│    <opencode-data-dir>  → <opencode-data-dir>  (rw)       │
+│    <opencode-data-dir>  → /agent/home/.local/share/opencode  (rw) │
 │    (host opencode data dir, auth.json)                    │
 │                                                            │
 │    /state/sessions/<id>/construct-agents.md                │
@@ -225,7 +225,7 @@ appear with the correct ownership on the host.
 | `construct-layer-<short-id>` (volume) | `/agent` | read-write | Agent layer |
 | `<canonical-repo-path>` (bind) | `<canonical-repo-path>` | read-write | With idmap (see below) |
 | `<host-opencode-config-dir>` (bind) | `<host-opencode-config-dir>` | read-write | Host opencode config (writable so /connect can persist tokens) |
-| `<host-opencode-data-dir>` (bind) | `<host-opencode-data-dir>` | read-write | Host opencode data dir (auth.json lives here) |
+| `<host-opencode-data-dir>` (bind) | `/agent/home/.local/share/opencode` | read-write | Host opencode data dir (auth.json lives here) |
 | `/state/credentials/global/` (bind) | `/run/construct/creds/global/` | read-only | Global credentials |
 | `/state/credentials/folders/<slug>/` (bind) | `/run/construct/creds/folder/` | read-only | Per-folder credentials |
 | `/state/sessions/<short-id>/agents.md` (bind) | `/run/construct/agents.md` | read-only | Injected instructions |
@@ -236,9 +236,13 @@ the CLI at session creation time.
 
 `<host-opencode-data-dir>` is the resolved host opencode data path
 (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`), also passed to the
-daemon by the CLI. opencode writes `auth.json` here; mounting it read-write
-ensures tokens written by an in-container auth flow persist to the host and are
-shared across all sessions.
+daemon by the CLI. It is mounted at `/agent/home/.local/share/opencode` — the
+natural XDG data path when `HOME=/agent/home` — so opencode resolves it without
+any `XDG_DATA_HOME` override. opencode writes `auth.json` here; mounting it
+read-write ensures tokens written by an in-container auth flow persist to the
+host and are shared across all sessions. Mounting at this fixed container path
+(rather than the host path) also prevents other XDG-aware tools (e.g. NuGet)
+from following `XDG_DATA_HOME` to unmounted host paths inside the container.
 
 The per-folder credentials directory is always mounted, even if empty. The daemon
 creates an empty directory for the folder slug at session start if it doesn't
@@ -256,7 +260,6 @@ sourced by the entrypoint (R-AUTH-1). Standard env vars set in the container:
 | `HOME` | `/agent/home` |
 | `PATH` | `/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` |
 | `XDG_CONFIG_HOME` | `/agent/home/.config` |
-| `XDG_DATA_HOME` | Parent of the host opencode data dir (e.g. `~/.local/share`) |
 | `OPENCODE_CONFIG_DIR` | Resolved host opencode config path |
 | `OPENCODE_CONFIG_CONTENT` | `{"permission":"allow"}` — enforces yolo/auto-approve mode |
 | `CONSTRUCT_SESSION_ID` | Session UUID |

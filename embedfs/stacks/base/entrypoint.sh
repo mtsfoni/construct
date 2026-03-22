@@ -33,9 +33,11 @@ for f in /run/construct/creds/folder/*.env; do
 done 2>/dev/null || true
 
 # 3. Ensure agent layer directories exist (owned by the running user)
-#    ~/.local/share/NuGet is pre-created so NuGet can write its vulnerability
-#    advisory cache without emitting NU1900 warnings on every build.
+#    ~/.local/share/opencode is pre-created as the mount point for the host
+#    opencode data dir (auth.json). ~/.local/share/NuGet is pre-created so
+#    NuGet can write its vulnerability advisory cache without NU1900 warnings.
 mkdir -p /agent/bin /agent/lib /agent/cache /agent/home/.config/opencode \
+         /agent/home/.local/share/opencode \
          /agent/home/.local/share/NuGet
 chown -R "$AGENT_UID:$AGENT_GID" /agent/home /agent/bin /agent/lib /agent/cache 2>/dev/null || true
 

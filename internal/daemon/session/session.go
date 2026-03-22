@@ -681,7 +681,11 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 	// Fedora/RHEL with SELinux enforcing. The Mounts struct has no such field.
 	binds := []string{
 		s.OpenCodeConfigDir + ":" + s.OpenCodeConfigDir + ":z",
-		s.OpenCodeDataDir + ":" + s.OpenCodeDataDir + ":z",
+		// Mount the host opencode data dir at its natural container path so
+		// that HOME=/agent/home resolves ~/.local/share/opencode correctly.
+		// This avoids setting XDG_DATA_HOME to a host path, which would cause
+		// other XDG-aware tools (e.g. NuGet) to try writing to unmounted paths.
+		s.OpenCodeDataDir + ":/agent/home/.local/share/opencode:z",
 		m.hostGlobalCredDir() + ":/run/construct/creds/global:ro,z",
 		m.hostFolderCredDir(s.Repo) + ":/run/construct/creds/folder:ro,z",
 		filepath.Join(m.hostSessionDir(shortID), "construct-agents.md") +
@@ -901,7 +905,6 @@ func buildEnv(s *registry.Session, shortID string) []string {
 	env := []string{
 		"HOME=/agent/home",
 		"XDG_CONFIG_HOME=/agent/home/.config",
-		fmt.Sprintf("XDG_DATA_HOME=%s", filepath.Dir(s.OpenCodeDataDir)),
 		"NPM_CONFIG_PREFIX=/agent",
 		fmt.Sprintf("OPENCODE_CONFIG_DIR=%s", s.OpenCodeConfigDir),
 		// OPENCODE_CONFIG_CONTENT has the highest precedence of all opencode
