@@ -338,12 +338,15 @@ When `docker_mode = dood`:
 
 1. The host Docker socket `/var/run/docker.sock` is bind-mounted into the agent
    container at `/var/run/docker.sock`.
-2. `--security-opt label=disable` is added to the container unconditionally to
-   prevent SELinux from blocking access to the host Docker socket on systems
-   where SELinux is enforcing.
-3. The user accepts the risk explicitly (R-ISO-5).
-4. No special network or sidecar is created.
-5. A warning is printed by the CLI at session start: "dood mode gives the agent
+2. `--security-opt label=disable` is added to the container to prevent SELinux
+   from blocking socket access on enforcing systems.
+3. The GID of `/var/run/docker.sock` is read by the daemon (the socket is also
+   mounted in the daemon container) and added to the agent container via
+   `GroupAdd`. This ensures the agent user (running as host UID:GID) is a member
+   of the docker group and can access the socket without being root.
+4. The user accepts the risk explicitly (R-ISO-5).
+5. No special network or sidecar is created.
+6. A warning is printed by the CLI at session start: "dood mode gives the agent
    full access to the host Docker daemon."
 
 ---

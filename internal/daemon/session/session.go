@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -733,6 +734,9 @@ func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volu
 	}
 	if s.DockerMode == "dood" {
 		hostCfg.SecurityOpt = []string{"label=disable"}
+		// Add the docker socket's GID as a supplementary group so the agent
+		// user (uid:gid) can access /var/run/docker.sock without being root.
+		hostCfg.GroupAdd = []string{dockerSocketGID()}
 	}
 
 	_, err := m.docker.ContainerCreate(
@@ -862,6 +866,20 @@ func (m *Manager) saveQuickstart(s *registry.Session) {
 }
 
 // --- pure functions ---
+
+// dockerSocketGID returns the GID of /var/run/docker.sock as a string.
+// Returns "0" (root) if the stat fails or the platform does not support Stat_t.
+func dockerSocketGID() string {
+	fi, err := os.Stat("/var/run/docker.sock")
+	if err != nil {
+		return "0"
+	}
+	stat, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "0"
+	}
+	return fmt.Sprintf("%d", stat.Gid)
+}
 
 func agentsParams(s *registry.Session) config.AgentsParams {
 	ports := make([]config.PortMapping, 0, len(s.Ports))
