@@ -30,17 +30,15 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Extract changelog notes
-        id: notes
         run: |
-          # Extract the content between the first ## [Unreleased] heading
-          # and the next ## heading (exclusive). Strips the leading/trailing
-          # blank lines and the --- separator.
+          # Extract the content between ## [Unreleased] and the next ## heading.
+          # Write to release-notes.md so special characters (backticks, quotes)
+          # are never interpolated through shell variable expansion.
           python3 - <<'EOF'
-          import re, os, sys
+          import re, sys
 
           text = open("CHANGELOG.md").read()
 
-          # Match everything between ## [Unreleased] and the next ## heading
           m = re.search(
               r'^## \[Unreleased\]\s*\n(.*?)(?=^## )',
               text, re.MULTILINE | re.DOTALL
@@ -50,17 +48,13 @@ jobs:
               sys.exit(1)
 
           body = m.group(1).strip()
-          # Remove a leading --- separator if present
           body = re.sub(r'^---\s*\n?', '', body).strip()
 
           if not body:
               print("ERROR: [Unreleased] section is empty", file=sys.stderr)
               sys.exit(1)
 
-          # Write to GITHUB_OUTPUT using the multiline syntax
-          delim = "EOF_NOTES"
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"notes<<{delim}\n{body}\n{delim}\n")
+          open("release-notes.md", "w").write(body + "\n")
           EOF
 
       - name: Build linux/amd64
@@ -98,7 +92,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit "${{ steps.version.outputs.version }}" \
-            --notes "${{ steps.notes.outputs.notes }}"
+            --notes-file release-notes.md
 
       - name: Update CHANGELOG.md
         run: |
