@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- **dood: agent can now access Docker socket** — the agent user (running as host UID:GID) was not a member of the docker group inside the container, so `docker` commands failed with permission denied. The daemon now reads the GID of `/var/run/docker.sock` and adds it to the session container via `GroupAdd`.
+
+### Changed
+- **Linux only** — README now clearly states macOS and Windows are not supported.
+
+### Chore
+- Remove accidentally committed build binaries (`construct`, `constructd`) and add `.gitignore`.
+- Add release pipeline (`.github/workflows/release.yml`) — triggers on GitHub release publish, builds linux/amd64 and linux/arm64 binaries, uploads them as assets, copies `[Unreleased]` changelog content as release notes, and commits the changelog update back to main.
+
 ---
 
 ## [v1.0.0] — 2026-03-22
