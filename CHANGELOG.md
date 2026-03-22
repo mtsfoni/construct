@@ -1,7 +1,12 @@
 # Changelog
 
 
+
 ## [Unreleased]
+
+---
+
+## [v1.0.2] — 2026-03-22
 
 ### Fixed
 - **Downloaded binaries now work without a Go toolchain** — `construct` binaries downloaded from a GitHub release no longer require a Go toolchain on the host. `constructd` is now embedded directly inside the `construct` binary at release build time and extracted into the Docker build context at runtime. Dev/local builds (via `install.sh`) continue to compile `constructd` from source as before.
