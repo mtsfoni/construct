@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,9 @@ import (
 	"github.com/construct-run/construct/internal/stacks"
 	"github.com/construct-run/construct/internal/version"
 )
+
+//go:embed daemon/constructd
+var embeddedConstructd []byte
 
 const (
 	daemonContainerName = "construct-daemon"
@@ -147,29 +151,38 @@ func buildDaemonImage(ctx context.Context, opts Options) error {
 	}
 	defer os.RemoveAll(buildCtxDir)
 
-	// Cross-compile constructd for linux/amd64 and place it in the build context.
-	// The Dockerfile does a simple COPY rather than building from source, so no
-	// Go toolchain is needed inside the daemon image.
-	logProgress(opts.Progress, "Compiling constructd for linux/amd64...")
 	constructdPath := filepath.Join(buildCtxDir, "constructd")
-	buildCmd := exec.CommandContext(ctx, "go", "build",
-		"-ldflags", "-X github.com/construct-run/construct/internal/version.Version="+version.Version+" -s -w",
-		"-o", constructdPath,
-		"./cmd/constructd/",
-	)
-	buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
-	// Run go build from the construct source tree, not from the caller's cwd.
-	// SourceDir is stamped at build time by install.sh; fall back to the
-	// executable's directory if it wasn't set (e.g. during development).
-	if version.SourceDir != "" {
-		buildCmd.Dir = version.SourceDir
-	} else {
-		if exe, err := os.Executable(); err == nil {
-			buildCmd.Dir = filepath.Dir(exe)
+
+	if isELFBinary(embeddedConstructd) {
+		// Release build: the embedded bytes are a real constructd binary.
+		// Write it directly to the build context — no Go toolchain needed.
+		logProgress(opts.Progress, "Extracting embedded constructd binary...")
+		if err := os.WriteFile(constructdPath, embeddedConstructd, 0o755); err != nil {
+			return fmt.Errorf("write embedded constructd: %w", err)
 		}
-	}
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("compile constructd: %w\n%s", err, out)
+	} else {
+		// Dev/local build: the embedded bytes are the placeholder.
+		// Cross-compile constructd from source (requires Go toolchain).
+		logProgress(opts.Progress, "Compiling constructd for linux/amd64...")
+		buildCmd := exec.CommandContext(ctx, "go", "build",
+			"-ldflags", "-X github.com/construct-run/construct/internal/version.Version="+version.Version+" -s -w",
+			"-o", constructdPath,
+			"./cmd/constructd/",
+		)
+		buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+		// Run go build from the construct source tree, not from the caller's cwd.
+		// SourceDir is stamped at build time by install.sh; fall back to the
+		// executable's directory if it wasn't set (e.g. during development).
+		if version.SourceDir != "" {
+			buildCmd.Dir = version.SourceDir
+		} else {
+			if exe, err := os.Executable(); err == nil {
+				buildCmd.Dir = filepath.Dir(exe)
+			}
+		}
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("compile constructd: %w\n%s", err, out)
+		}
 	}
 
 	args := []string{
@@ -187,6 +200,12 @@ func buildDaemonImage(ctx context.Context, opts Options) error {
 		return fmt.Errorf("docker build: %w", err)
 	}
 	return nil
+}
+
+// isELFBinary returns true if b starts with the ELF magic bytes (\x7fELF).
+// Used to distinguish a real embedded constructd binary from the placeholder file.
+func isELFBinary(b []byte) bool {
+	return len(b) >= 4 && b[0] == 0x7f && b[1] == 'E' && b[2] == 'L' && b[3] == 'F'
 }
 
 func runDaemonContainer(ctx context.Context, opts Options) error {

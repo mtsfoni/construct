@@ -57,7 +57,7 @@ jobs:
           open("release-notes.md", "w").write(body + "\n")
           EOF
 
-      - name: Build linux/amd64
+      - name: Build constructd linux/amd64
         env:
           GOOS: linux
           GOARCH: amd64
@@ -65,15 +65,39 @@ jobs:
         run: |
           go build \
             -ldflags "-X github.com/construct-run/construct/internal/version.Version=${{ steps.version.outputs.version }} -s -w" \
-            -o construct-linux-amd64 \
-            ./cmd/construct/
+            -o constructd-linux-amd64 \
+            ./cmd/constructd/
 
-      - name: Build linux/arm64
+      - name: Build constructd linux/arm64
         env:
           GOOS: linux
           GOARCH: arm64
           CGO_ENABLED: "0"
         run: |
+          go build \
+            -ldflags "-X github.com/construct-run/construct/internal/version.Version=${{ steps.version.outputs.version }} -s -w" \
+            -o constructd-linux-arm64 \
+            ./cmd/constructd/
+
+      - name: Build construct linux/amd64 (with embedded constructd)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          cp constructd-linux-amd64 internal/bootstrap/daemon/constructd
+          go build \
+            -ldflags "-X github.com/construct-run/construct/internal/version.Version=${{ steps.version.outputs.version }} -s -w" \
+            -o construct-linux-amd64 \
+            ./cmd/construct/
+
+      - name: Build construct linux/arm64 (with embedded constructd)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          cp constructd-linux-arm64 internal/bootstrap/daemon/constructd
           go build \
             -ldflags "-X github.com/construct-run/construct/internal/version.Version=${{ steps.version.outputs.version }} -s -w" \
             -o construct-linux-arm64 \
