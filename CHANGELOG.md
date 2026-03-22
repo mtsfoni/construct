@@ -2,8 +2,29 @@
 
 ## [Unreleased]
 
+---
+
+## [v1.0.0] — 2026-03-22
+
+### Added
+- **`dotnet` stack** — .NET 10 SDK on top of `construct-stack-base`. Use `--stack dotnet` for C# and F# projects.
+- **`go` stack** — Go toolchain on top of `construct-stack-base`. Use `--stack go` for Go projects.
+- **`ruby` stack** — Ruby + Bundler + Jekyll on top of `construct-stack-base`. Use `--stack ruby`.
+- **Base-first stack image building** — when a child stack image (e.g. `dotnet`) is needed but its base (`construct-stack-base`) does not exist yet, the daemon now builds the base automatically before building the child. No more manual "build base first" step after `construct purge`.
+- **Agent can install packages with `sudo apt-get`** — the agent user has passwordless sudo inside the container, so the agent can install system packages on demand.
+
+### Fixed
+- **PATH in login shells** — `/etc/profile` on Debian resets `PATH` to a minimal default for non-root users, so stack-specific binaries (e.g. `/usr/local/dotnet`) were missing when opencode spawned a login shell. Each stack Dockerfile now writes `/etc/profile.d/construct-path.sh` with the correct full `PATH`.
+- **NU1900 NuGet warnings on every `dotnet build`** — the daemon previously set `XDG_DATA_HOME` to the host path parent so opencode could find `auth.json`. NuGet also respects `XDG_DATA_HOME` and tried to write its vulnerability cache to that path, which was not mounted, triggering NU1900 on every build. Fix: the host opencode data directory is now mounted at `/agent/home/.local/share/opencode` (the natural `$HOME/.local/share/opencode` path when `HOME=/agent/home`), and `XDG_DATA_HOME` is no longer injected.
+- **Root-owned session/quickstart state dirs** — `~/.config/construct/sessions` and `~/.config/construct/quickstart` could be created root-owned by an older daemon. The daemon container now always runs as the host user.
+- **`--help` no longer starts a session** — `construct run --help` previously started the daemon before printing help. It now exits immediately.
+- **Port flag parsing with folder path** — `construct /path/to/repo --port 3000` was not parsed correctly when the folder path preceded the flags.
+- **Web UI port hidden from agent** — the auto-published opencode web UI port is no longer included in the port-forwarding advice injected into the agent's context.
+- **Path mirroring: repo mounted at its exact host path** — the container no longer mounts the repo at `/workspace`. The repo is mounted at its real absolute path (e.g. `/home/user/src/myrepo`), making git worktrees work correctly and allowing multiple repos to run simultaneously without path conflicts.
+
 ### Changed
-- **Path mirroring: repo mounted at its exact host path** — the container no longer mounts the repo at the fixed path `/workspace`. On Linux and macOS the repo is now mounted at its real absolute path (e.g. `/home/user/src/myrepo`), and the container's working directory is set to that same path. This makes git worktrees work correctly (git stores absolute host paths in worktree metadata, which now resolve identically inside the container), and allows running `construct` against multiple repos or worktrees simultaneously without path conflicts. The agent is informed of the shared path via the `CONSTRUCT_WORKSPACE_PATH` environment variable, which is expanded into `~/.config/opencode/AGENTS.md` at container start. On Windows, Docker Desktop cannot mirror host paths into the Linux VM, so the previous `/workspace` fallback is retained.
+- **Agent exec runs as host UID:GID** — all `docker exec` calls use `--user uid:gid` matching the host user. Files written to the bind-mounted repo appear with correct ownership on the host.
+- **Daemon architecture** — the CLI communicates with a persistent daemon over a Unix socket using newline-delimited JSON. Sessions survive CLI restarts. See `SPEC/` for the full design.
 
 ---
 
