@@ -1,6 +1,11 @@
 # Changelog
 
+
 ## [Unreleased]
+
+---
+
+## [v1.0.1] — 2026-03-22
 
 ### Fixed
 - **dood: agent can now access Docker socket** — the agent user (running as host UID:GID) was not a member of the docker group inside the container, so `docker` commands failed with permission denied. The daemon now reads the GID of `/var/run/docker.sock` and adds it to the session container via `GroupAdd`.
