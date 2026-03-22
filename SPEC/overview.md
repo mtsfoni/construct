@@ -171,7 +171,7 @@ stacks/              # Dockerfile build contexts (embedded via go:embed)
 │   └── Dockerfile
 ├── dotnet/
 │   └── Dockerfile
-├── dotnet-big/
+├── dotnet-ui/
 │   └── Dockerfile
 ├── ruby/
 │   └── Dockerfile

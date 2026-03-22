@@ -122,6 +122,12 @@ If the agent installs a tool or runtime during a session, that installation must
 survive even if the stack image is updated or rebuilt. I should not lose what the
 agent set up just because I pulled a new version of the stack.
 
+### R-LIFE-6 — Stack image updates apply automatically on next start
+When a new version of a stack image is available (detected by a content-hash label
+on the image), starting a stopped session automatically updates the underlying
+container to use the new image while preserving the agent layer volume. The user
+does not need to destroy and recreate the session to pick up stack changes.
+
 ### R-LIFE-5 — Explicit full purge
 I can purge all construct state in one command when I want a completely clean
 slate — useful before upgrades, after breakage, or when done with construct on a
@@ -177,7 +183,7 @@ The base stack includes Node (for tool installation), git, Docker CLI, and Pytho
 All stacks inherit from base.
 
 ### R-STACK-3 — Supported stacks
-At minimum: base, node, dotnet, dotnet-big (multiple SDK versions), go, python, ruby.
+At minimum: base, node, dotnet (8.0, 9.0, and 10.0 SDKs side-by-side), dotnet-ui (dotnet + Playwright/Chromium), go, python, ruby.
 UI variants (with Playwright/MCP) are additive on top of any stack.
 
 ---
@@ -240,6 +246,12 @@ the session is ready — they must not block streaming logs. After printing the 
 URL and TUI hint, the CLI waits until the agent's web server is reachable on the
 host port (readiness probe), then exits cleanly. Log streaming is a separate
 explicit command (`construct logs -f`).
+
+### R-UX-8 — Partial session ID matching
+Any command that accepts a session ID also accepts any unambiguous prefix of that
+ID, no matter how short. If the prefix matches exactly one session, it resolves to
+that session. If it matches more than one, the CLI errors with an "ambiguous prefix"
+message listing the match count. This mirrors the shorthand used by git and Docker.
 
 ### R-UX-4 — Debug mode
 A --debug flag drops into an interactive shell in the container instead of starting

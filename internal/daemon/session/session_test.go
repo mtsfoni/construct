@@ -16,6 +16,8 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
+	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/construct-run/construct/internal/auth"
@@ -28,7 +30,7 @@ import (
 // --- fake Docker client ---
 
 type fakeDocker struct {
-	// containers maps name→created
+	// containers maps name→started (true=running, false=created/stopped)
 	containers map[string]bool
 	// volumes maps name→created
 	volumes map[string]bool
@@ -38,6 +40,12 @@ type fakeDocker struct {
 	execResults map[string]int
 	// imageExists controls whether ImageInspectWithRaw returns an image
 	imageExists bool
+	// imageSpecLabel overrides the io.construct.image-spec label returned by
+	// ImageInspectWithRaw when imageExists is true. When empty (the default),
+	// the fake auto-derives the correct label for the image's stack so that
+	// tests not concerned with staleness see an up-to-date image. Set this
+	// to a fixed string (e.g. "embedded:stalevalue") to simulate a stale image.
+	imageSpecLabel string
 	// errors maps method name→error to return
 	errors map[string]error
 	// calls records the sequence of method names called
@@ -50,6 +58,10 @@ type fakeDocker struct {
 	lastExecOptions *container.ExecOptions
 	// allExecOptions is all ExecOptions passed to ContainerExecCreate
 	allExecOptions []container.ExecOptions
+	// containerInspectRunning controls what ContainerInspect reports for State.Running.
+	// When nil (default), it reports the container as running iff containers[name]==true.
+	// Set to a non-nil *bool to override for all containers.
+	containerInspectRunning *bool
 }
 
 func newFakeDocker() *fakeDocker {
@@ -99,9 +111,20 @@ func (f *fakeDocker) ContainerRemove(_ context.Context, containerID string, _ co
 	return nil
 }
 
-func (f *fakeDocker) ContainerInspect(_ context.Context, _ string) (types.ContainerJSON, error) {
+func (f *fakeDocker) ContainerInspect(_ context.Context, name string) (types.ContainerJSON, error) {
 	f.record("ContainerInspect")
-	return types.ContainerJSON{}, nil
+	if err := f.errors["ContainerInspect"]; err != nil {
+		return types.ContainerJSON{}, err
+	}
+	running := f.containers[name] // default: mirrors ContainerStart/Stop state
+	if f.containerInspectRunning != nil {
+		running = *f.containerInspectRunning
+	}
+	return types.ContainerJSON{
+		ContainerJSONBase: &types.ContainerJSONBase{
+			State: &types.ContainerState{Running: running},
+		},
+	}, nil
 }
 
 func (f *fakeDocker) ContainerExecCreate(_ context.Context, _ string, opts container.ExecOptions) (types.IDResponse, error) {
@@ -162,15 +185,42 @@ func (f *fakeDocker) ImageBuild(_ context.Context, _ io.Reader, _ types.ImageBui
 	return types.ImageBuildResponse{Body: io.NopCloser(strings.NewReader(""))}, nil
 }
 
-func (f *fakeDocker) ImageInspectWithRaw(_ context.Context, _ string) (types.ImageInspect, []byte, error) {
+func (f *fakeDocker) ImageInspectWithRaw(_ context.Context, imageName string) (types.ImageInspect, []byte, error) {
 	f.record("ImageInspectWithRaw")
 	if !f.imageExists {
 		return types.ImageInspect{}, nil, &fakeNotFoundError{}
 	}
-	return types.ImageInspect{}, nil, nil
+	var specLabel string
+	if f.imageSpecLabel != "" {
+		// Explicit override — use as-is (including empty-string sentinel via
+		// imageSpecLabel = " " trick; for tests that want no label use a
+		// different mechanism). Empty imageSpecLabel means "derive from image".
+		specLabel = f.imageSpecLabel
+	} else {
+		// Auto-derive the correct spec label so tests that don't care about
+		// staleness behave as though the image is up to date.
+		stackName := strings.TrimPrefix(imageName, "construct-stack-")
+		stackName = strings.TrimSuffix(stackName, ":latest")
+		if spec, err := stacks.SpecFor(stackName); err == nil {
+			specLabel = spec.Label()
+		}
+	}
+	labels := map[string]string{}
+	if specLabel != "" {
+		labels[stacks.ImageSpecLabel] = specLabel
+	}
+	cfg := &dockerspec.DockerOCIImageConfig{
+		ImageConfig: ocispec.ImageConfig{Labels: labels},
+	}
+	return types.ImageInspect{Config: cfg}, nil, nil
 }
 
 func (f *fakeDocker) ImageList(_ context.Context, _ image.ListOptions) ([]image.Summary, error) {
+	return nil, nil
+}
+
+func (f *fakeDocker) ImageRemove(_ context.Context, imageID string, _ image.RemoveOptions) ([]image.DeleteResponse, error) {
+	f.record("ImageRemove")
 	return nil, nil
 }
 
@@ -288,6 +338,9 @@ func TestSession_Start_CreatesNewSession(t *testing.T) {
 	}
 }
 
+// TestSession_Start_AttachesToRunning verifies that a second Start for the same
+// folder while the container is live returns the same session without creating
+// anything new.
 func TestSession_Start_AttachesToRunning(t *testing.T) {
 	fd := newFakeDocker()
 	m, dir := newTestManager(t, fd)
@@ -799,6 +852,101 @@ func TestSession_ImageBuildCalledWhenMissing(t *testing.T) {
 	}
 }
 
+// TestSession_ImageBuildWhenStale verifies that when the image exists but its
+// io.construct.image-spec label does not match the current spec, ensureStackImage
+// removes the stale image and rebuilds it.
+func TestSession_ImageBuildWhenStale(t *testing.T) {
+	fd := newFakeDocker()
+	fd.imageExists = true
+	fd.imageSpecLabel = "embedded:000000000000stale" // outdated label
+	m, dir := newTestManager(t, fd)
+
+	if _, err := m.Start(context.Background(), defaultParams(dir), nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var removed, built bool
+	for _, call := range fd.calls {
+		if call == "ImageRemove" {
+			removed = true
+		}
+		if call == "ImageBuild" {
+			built = true
+		}
+	}
+	if !removed {
+		t.Error("expected ImageRemove for stale image")
+	}
+	if !built {
+		t.Error("expected ImageBuild after removing stale image")
+	}
+}
+
+// TestSession_StaleImageOnRestart verifies that when a stopped session is
+// restarted and the stack image is stale, the image is rebuilt and the
+// container is recreated — but the agent layer volume is preserved.
+func TestSession_StaleImageOnRestart(t *testing.T) {
+	fd := newFakeDocker()
+	m, dir := newTestManager(t, fd)
+	repo := dir
+
+	// Create and stop a session.
+	res, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	shortID := res.Session.ShortID()
+	volName := "construct-layer-" + shortID
+
+	if _, err := m.Stop(context.Background(), res.Session.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Simulate a stale image by setting an outdated label.
+	fd.imageSpecLabel = "embedded:000000000000stale"
+	fd.calls = nil
+
+	// Restart — should detect stale image, rebuild, and recreate container.
+	res2, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("restart Start: %v", err)
+	}
+	if res2.Session.Status != registry.StatusRunning {
+		t.Errorf("status = %q, want running", res2.Session.Status)
+	}
+
+	var removed, built, created bool
+	var volumeRemoved bool
+	for _, call := range fd.calls {
+		switch call {
+		case "ImageRemove":
+			removed = true
+		case "ImageBuild":
+			built = true
+		case "ContainerCreate":
+			created = true
+		case "VolumeRemove":
+			volumeRemoved = true
+		}
+	}
+	if !removed {
+		t.Error("expected ImageRemove for stale image")
+	}
+	if !built {
+		t.Error("expected ImageBuild after stale image detected")
+	}
+	if !created {
+		t.Error("expected ContainerCreate to recreate container with new image")
+	}
+	if volumeRemoved {
+		t.Error("expected volume to be preserved (not removed) during image update")
+	}
+	// Volume must still exist.
+	if !fd.volumes[volName] {
+		t.Error("expected agent layer volume to survive image update")
+	}
+}
+
 func TestSession_DindMode(t *testing.T) {
 	fd := newFakeDocker()
 	m, dir := newTestManager(t, fd)
@@ -1055,5 +1203,98 @@ func TestSession_ContainerUserIsHostUID(t *testing.T) {
 					}())
 			}
 		})
+	}
+}
+
+// TestSession_Start_RestartsWhenContainerGone verifies that if a session is
+// marked running in the registry but its container no longer exists (e.g. it
+// was manually deleted), Start recreates and relaunches it rather than
+// returning the stale running session.
+func TestSession_Start_RestartsWhenContainerGone(t *testing.T) {
+	fd := newFakeDocker()
+	m, dir := newTestManager(t, fd)
+	repo := dir
+
+	// First start — creates the session.
+	res1, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if res1.Session.Status != registry.StatusRunning {
+		t.Fatalf("expected running after first start, got %q", res1.Session.Status)
+	}
+
+	// Simulate the container being manually removed: delete it from the fake
+	// map and make ContainerInspect report not-found.
+	delete(fd.containers, res1.Session.ContainerName)
+	notRunning := false
+	fd.containerInspectRunning = &notRunning
+	fd.errors["ContainerInspect"] = &fakeNotFoundError{}
+
+	// Second Start for the same folder — should detect the missing container,
+	// recreate it, and return a running session.
+	fd.calls = nil
+	res2, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("second Start (after container gone): %v", err)
+	}
+	if res2.Session.Status != registry.StatusRunning {
+		t.Errorf("status = %q, want running", res2.Session.Status)
+	}
+	// Same session ID (we restart, not create a new session).
+	if res2.Session.ID != res1.Session.ID {
+		t.Errorf("session ID changed: got %q, want %q", res2.Session.ID, res1.Session.ID)
+	}
+	// A new container should have been started.
+	var started bool
+	for _, call := range fd.calls {
+		if call == "ContainerStart" {
+			started = true
+		}
+	}
+	if !started {
+		t.Error("expected ContainerStart to be called after missing container detected")
+	}
+}
+
+// TestSession_Start_RestartsWhenContainerStopped verifies that if a session is
+// marked running but its container has exited (exists but State.Running==false),
+// Start restarts it.
+func TestSession_Start_RestartsWhenContainerStopped(t *testing.T) {
+	fd := newFakeDocker()
+	m, dir := newTestManager(t, fd)
+	repo := dir
+
+	// First start.
+	res1, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+
+	// Simulate container having exited without construct knowing: mark it
+	// stopped in the fake but leave the registry as "running".
+	fd.containers[res1.Session.ContainerName] = false // stopped, not removed
+	notRunning := false
+	fd.containerInspectRunning = &notRunning
+
+	fd.calls = nil
+	res2, err := m.Start(context.Background(), defaultParams(repo), nil)
+	if err != nil {
+		t.Fatalf("second Start (after container stopped): %v", err)
+	}
+	if res2.Session.Status != registry.StatusRunning {
+		t.Errorf("status = %q, want running", res2.Session.Status)
+	}
+	if res2.Session.ID != res1.Session.ID {
+		t.Errorf("session ID changed: got %q, want %q", res2.Session.ID, res1.Session.ID)
+	}
+	var started bool
+	for _, call := range fd.calls {
+		if call == "ContainerStart" {
+			started = true
+		}
+	}
+	if !started {
+		t.Error("expected ContainerStart after stopped container detected")
 	}
 }

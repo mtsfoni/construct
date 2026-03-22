@@ -14,7 +14,7 @@ func TestImageName(t *testing.T) {
 		{"go", "construct-stack-go:latest"},
 		{"python", "construct-stack-python:latest"},
 		{"dotnet", "construct-stack-dotnet:latest"},
-		{"dotnet-big", "construct-stack-dotnet-big:latest"},
+		{"dotnet-ui", "construct-stack-dotnet-ui:latest"},
 		{"ruby", "construct-stack-ruby:latest"},
 		{"base-ui", "construct-stack-base-ui:latest"},
 	}
@@ -37,7 +37,7 @@ func TestDaemonImageName(t *testing.T) {
 }
 
 func TestValidStacks(t *testing.T) {
-	expected := []string{"base", "node", "go", "python", "dotnet", "dotnet-big", "ruby", "base-ui"}
+	expected := []string{"base", "node", "go", "python", "dotnet", "dotnet-ui", "ruby", "base-ui"}
 	for _, s := range expected {
 		if !ValidStacks[s] {
 			t.Errorf("ValidStacks[%q] should be true", s)

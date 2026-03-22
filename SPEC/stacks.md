@@ -53,7 +53,7 @@ stacks/
 │   └── Dockerfile
 ├── dotnet/
 │   └── Dockerfile
-├── dotnet-big/
+├── dotnet-ui/
 │   └── Dockerfile
 ├── ruby/
 │   └── Dockerfile
@@ -111,7 +111,9 @@ Dockerfile). This script is set as the container's default command via
 2. Sources all credential `.env` files from `/run/construct/creds/global/` and
    `/run/construct/creds/folder/` (per-folder overrides global).
 3. Creates agent layer directories (`/agent/bin`, `/agent/lib`, `/agent/cache`,
-   `/agent/home/.config/opencode`) and chowns them to the host user.
+   `/agent/home/.config/opencode`, `/agent/home/.local/share/NuGet`) and chowns
+   them to the host user. The NuGet directory is pre-created so NuGet can write
+   its vulnerability advisory cache without emitting NU1900 warnings.
 4. Writes `/agent/home/.config/opencode/opencode.json` with construct context
    injection (`instructions: ["/run/construct/agents.md"]`) and
    `autoupdate: false`.
@@ -159,14 +161,18 @@ Adds to base:
 ### `construct-stack-dotnet`
 
 Adds to base:
-- .NET SDK (latest LTS)
+- `libicu72` — ICU globalization libraries required by .NET on Debian Bookworm
+- .NET SDK versions 8.0 (LTS), 9.0 (STS), and 10.0 (current) — all installed side-by-side
 - `dotnet` CLI
+- `DOTNET_CLI_TELEMETRY_OPTOUT=1` — telemetry disabled
+- Suitable for single and multi-targeting projects across all active SDK generations
 
-### `construct-stack-dotnet-big`
+### `construct-stack-dotnet-ui`
 
-Adds to base:
-- Multiple .NET SDK versions (current LTS, previous LTS, and current STS)
-- Suitable for multi-targeting projects
+Adds to `construct-stack-dotnet`:
+- Playwright Chromium browser and its system dependencies (same set as `construct-stack-base-ui`)
+- `PLAYWRIGHT_BROWSERS_PATH` not set; browser is installed to the Playwright default location
+- No MCP server — use `construct-stack-base-ui` or a future `dotnet-ui` MCP variant for that
 
 ### `construct-stack-ruby`
 

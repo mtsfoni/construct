@@ -14,6 +14,10 @@ go build ./cmd/constructd/
 # Build both with version stamp
 go build -ldflags "-X github.com/construct-run/construct/internal/version.Version=<ver> -s -w" -o construct ./cmd/construct/
 go build -ldflags "-X github.com/construct-run/construct/internal/version.Version=<ver> -s -w" -o constructd ./cmd/constructd/
+
+# Build and install to ~/.local/bin (also stamps SourceDir so the daemon can
+# recompile constructd from the correct source tree regardless of cwd):
+bash install.sh
 ```
 
 ## Test Commands
@@ -80,6 +84,28 @@ internal/
 SPEC/                   Specification markdown documents
 REQS/                   Requirements documents
 ```
+
+## Documentation flow: REQS → SPEC → impl
+
+Changes follow a three-layer hierarchy:
+
+1. **`REQS/REQUIREMENTS.md`** — the *why*. Durable, implementation-agnostic requirements
+   (R-SES-1, R-LIFE-4, etc.). Update this first when adding or changing behaviour.
+   Requirements survive rewrites; they do not describe how, only what and why.
+
+2. **`SPEC/`** — the *how*. Markdown specs that translate requirements into concrete
+   design decisions: data structures, wire formats, algorithms, Docker container
+   configuration. Each spec references the requirements it implements. Update specs
+   when the design changes, before or alongside the code.
+
+3. **`internal/` (implementation)** — the code. Must stay consistent with the relevant
+   spec. If code diverges from the spec, either the spec or the code is wrong — fix
+   both together.
+
+When making a non-trivial change:
+- Add or update the relevant requirement in `REQS/REQUIREMENTS.md`
+- Add or update the relevant spec in `SPEC/`
+- Implement in code
 
 ## Code Style
 

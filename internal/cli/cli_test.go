@@ -239,6 +239,108 @@ func TestCredList(t *testing.T) {
 	}
 }
 
+func TestStop_ShortIDPrefix(t *testing.T) {
+	sockPath := startFakeDaemon(t, func(req map[string]interface{}, conn net.Conn) {
+		cmd, _ := req["command"].(string)
+		switch cmd {
+		case "session.list":
+			writeJSON(conn, map[string]interface{}{
+				"id":   req["id"],
+				"type": "end",
+				"payload": map[string]interface{}{
+					"sessions": []interface{}{
+						map[string]interface{}{
+							"id":   "aabbccdd-0000-0000-0000-000000000000",
+							"repo": "/home/alice/src/myapp",
+						},
+					},
+				},
+			})
+		case "session.stop":
+			writeJSON(conn, map[string]interface{}{
+				"id":   req["id"],
+				"type": "end",
+				"payload": map[string]interface{}{
+					"session": map[string]interface{}{
+						"id":   "aabbccdd-0000-0000-0000-000000000000",
+						"repo": "/home/alice/src/myapp",
+					},
+				},
+			})
+		}
+	})
+
+	c := cli.New(sockPath)
+	tests := []struct {
+		name   string
+		prefix string
+	}{
+		{"two chars", "aa"},
+		{"four chars", "aabb"},
+		{"eight chars", "aabbccdd"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := c.Stop(context.Background(), tt.prefix, &out)
+			if err != nil {
+				t.Fatalf("stop(%q) error: %v", tt.prefix, err)
+			}
+			if !bytes.Contains(out.Bytes(), []byte("stopped")) {
+				t.Fatalf("expected 'stopped' in output, got: %q", out.String())
+			}
+		})
+	}
+}
+
+func TestStop_AmbiguousIDPrefix(t *testing.T) {
+	sockPath := startFakeDaemon(t, func(req map[string]interface{}, conn net.Conn) {
+		cmd, _ := req["command"].(string)
+		if cmd == "session.list" {
+			writeJSON(conn, map[string]interface{}{
+				"id":   req["id"],
+				"type": "end",
+				"payload": map[string]interface{}{
+					"sessions": []interface{}{
+						map[string]interface{}{"id": "aabb1111-0000-0000-0000-000000000000", "repo": "/a"},
+						map[string]interface{}{"id": "aabb2222-0000-0000-0000-000000000000", "repo": "/b"},
+					},
+				},
+			})
+		}
+	})
+
+	c := cli.New(sockPath)
+	var out bytes.Buffer
+	err := c.Stop(context.Background(), "aabb", &out)
+	if err == nil {
+		t.Fatal("expected error for ambiguous prefix, got nil")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("ambiguous")) {
+		t.Fatalf("expected 'ambiguous' in error, got: %v", err)
+	}
+}
+
+func TestStop_NoMatchIDPrefix(t *testing.T) {
+	sockPath := startFakeDaemon(t, func(req map[string]interface{}, conn net.Conn) {
+		cmd, _ := req["command"].(string)
+		if cmd == "session.list" {
+			writeJSON(conn, map[string]interface{}{
+				"id":      req["id"],
+				"type":    "end",
+				"payload": map[string]interface{}{"sessions": []interface{}{}},
+			})
+		}
+	})
+
+	c := cli.New(sockPath)
+	var out bytes.Buffer
+	err := c.Stop(context.Background(), "dead", &out)
+	if err == nil {
+		t.Fatal("expected error for no-match prefix, got nil")
+	}
+}
+
 func TestDestroy_Force(t *testing.T) {
 	sockPath := startFakeDaemon(t, func(req map[string]interface{}, conn net.Conn) {
 		cmd, _ := req["command"].(string)

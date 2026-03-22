@@ -90,6 +90,10 @@ func (r *RealClient) ImageList(ctx context.Context, options image.ListOptions) (
 	return r.c.ImageList(ctx, options)
 }
 
+func (r *RealClient) ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error) {
+	return r.c.ImageRemove(ctx, imageID, options)
+}
+
 func (r *RealClient) NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error) {
 	return r.c.NetworkCreate(ctx, name, options)
 }

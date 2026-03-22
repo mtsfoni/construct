@@ -89,7 +89,7 @@ func runDaemon() error {
 	reconcile(ctx, mgr, reg, dockerClient)
 
 	// Create and start the server.
-	srv := server.New(socketPath, mgr, authStore)
+	srv := server.New(socketPath, mgr, authStore, qsStore)
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("start server: %w", err)
 	}

@@ -16,7 +16,11 @@ RUN git clone https://github.com/rbenv/rbenv.git /usr/local/rbenv \
     && git clone https://github.com/rbenv/ruby-build.git /usr/local/rbenv/plugins/ruby-build
 
 ENV RBENV_ROOT=/usr/local/rbenv
-ENV PATH=/usr/local/rbenv/bin:/usr/local/rbenv/shims:$PATH
+ENV PATH=/usr/local/rbenv/bin:/usr/local/rbenv/shims:/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Ensure rbenv is on PATH even in login shells.
+RUN echo 'export PATH="/usr/local/rbenv/bin:/usr/local/rbenv/shims:/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+    > /etc/profile.d/construct-path.sh
 
 # Install latest stable Ruby
 RUN rbenv install $(rbenv install -l | grep -v - | tail -1) \

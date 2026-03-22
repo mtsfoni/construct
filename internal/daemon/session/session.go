@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
@@ -223,15 +225,59 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 	conflict := settingsConflict(s, p)
 
 	if s.Status == registry.StatusRunning {
-		return &StartResult{
-			Session:          s,
-			WebURL:           webURL(s),
-			TUIHint:          tuiHint(s),
-			SettingsConflict: conflict,
-		}, nil
+		// Verify the container is still present and running. If it was manually
+		// deleted (or stopped outside construct), treat the session as stopped
+		// so the restart path recreates and relaunches it.
+		alive := m.containerIsRunning(ctx, s.ContainerName)
+		if alive {
+			return &StartResult{
+				Session:          s,
+				WebURL:           webURL(s),
+				TUIHint:          tuiHint(s),
+				SettingsConflict: conflict,
+			}, nil
+		}
+		// Container is gone or stopped — fix up the registry and fall through.
+		now := time.Now().UTC()
+		if err := m.reg.UpdateStatus(s.ID, registry.StatusStopped, nil, &now); err != nil {
+			return nil, fmt.Errorf("update status after missing container: %w", err)
+		}
+		s.Status = registry.StatusStopped
+		s.StoppedAt = &now
+		if progress != nil {
+			progress("Session container not running — restarting...")
+		}
 	}
 
 	// Stopped — restart.
+	volumeName := fmt.Sprintf("construct-layer-%s", s.ShortID())
+	imageName := stacks.ImageName(s.Stack)
+
+	// Check whether the stack image is up to date; rebuild if stale.
+	// If it was rebuilt, the existing container must be recreated because Docker
+	// bakes the image reference into the container at creation time.
+	imageRebuilt, err := m.ensureStackImage(ctx, s.Stack, imageName, progress)
+	if err != nil {
+		return nil, fmt.Errorf("ensure stack image: %w", err)
+	}
+
+	// Check whether the container still exists. It may have been removed
+	// externally (e.g. by a failed image-swap or manual docker rm).
+	containerMissing := !m.containerExists(ctx, s.ContainerName)
+
+	if imageRebuilt || containerMissing {
+		if imageRebuilt && progress != nil {
+			progress("Stack image updated — recreating container (volume preserved)...")
+		} else if containerMissing && progress != nil {
+			progress("Session container missing — recreating (volume preserved)...")
+		}
+		// Best-effort remove in case it partially exists.
+		m.docker.ContainerRemove(ctx, s.ContainerName, container.RemoveOptions{Force: true}) //nolint:errcheck
+		if err := m.createContainer(ctx, s, volumeName); err != nil {
+			return nil, fmt.Errorf("recreate container: %w", err)
+		}
+	}
+
 	// If the caller's UID/GID changed since the container was created (e.g. the
 	// session was created by a different user or before UID mapping was
 	// implemented), recreate the container so the new User field takes effect.
@@ -241,7 +287,6 @@ func (m *Manager) handleExisting(ctx context.Context, s *registry.Session, p Sta
 		if progress != nil {
 			progress("UID/GID changed — recreating session container...")
 		}
-		volumeName := fmt.Sprintf("construct-layer-%s", s.ShortID())
 		if err := m.docker.ContainerRemove(ctx, s.ContainerName, container.RemoveOptions{Force: true}); err != nil {
 			return nil, fmt.Errorf("remove container for uid/gid update: %w", err)
 		}
@@ -309,7 +354,7 @@ func (m *Manager) createNew(ctx context.Context, p StartParams, progress Progres
 	if progress != nil {
 		progress(fmt.Sprintf("Checking stack image %s...", imageName))
 	}
-	if err := m.ensureStackImage(ctx, p.Stack, imageName, progress); err != nil {
+	if _, err := m.ensureStackImage(ctx, p.Stack, imageName, progress); err != nil {
 		return nil, fmt.Errorf("ensure stack image: %w", err)
 	}
 
@@ -508,6 +553,25 @@ func (m *Manager) GetByPrefix(prefix string) (*registry.Session, error) {
 
 // --- helpers ---
 
+// containerIsRunning returns true if the named container exists and is
+// currently in the "running" state. Returns false for any error (including
+// not-found), making this safe to call without surfacing transient failures.
+func (m *Manager) containerIsRunning(ctx context.Context, containerName string) bool {
+	info, err := m.docker.ContainerInspect(ctx, containerName)
+	if err != nil {
+		// Not found or any other error → treat as not running.
+		return false
+	}
+	return info.State != nil && info.State.Running
+}
+
+// containerExists returns true if the named container exists in any state.
+// Returns false if not found or on any error.
+func (m *Manager) containerExists(ctx context.Context, containerName string) bool {
+	_, err := m.docker.ContainerInspect(ctx, containerName)
+	return err == nil
+}
+
 func (m *Manager) sessionDir(shortID string) string {
 	return filepath.Join(m.stateDir, "sessions", shortID)
 }
@@ -529,10 +593,32 @@ func (m *Manager) hostFolderCredDir(folderPath string) string {
 	return filepath.Join(m.hostStateDir, "credentials", "folders", sl)
 }
 
-func (m *Manager) ensureStackImage(ctx context.Context, stackName, imageName string, progress ProgressFn) error {
-	_, _, err := m.docker.ImageInspectWithRaw(ctx, imageName)
+func (m *Manager) ensureStackImage(ctx context.Context, stackName, imageName string, progress ProgressFn) (rebuilt bool, err error) {
+	// Build the base dependency first if this stack has one.
+	if base := stacks.BaseOf(stackName); base != "" {
+		if _, err := m.ensureStackImage(ctx, base, stacks.ImageName(base), progress); err != nil {
+			return false, fmt.Errorf("ensure base image %s: %w", base, err)
+		}
+	}
+
+	spec, err := stacks.SpecFor(stackName)
+	if err != nil {
+		return false, fmt.Errorf("resolve image spec: %w", err)
+	}
+	desiredLabel := spec.Label()
+
+	// Inspect the existing image, if any.
+	imgInfo, _, err := m.docker.ImageInspectWithRaw(ctx, imageName)
 	if err == nil {
-		return nil
+		// Image exists — check whether it was built from the same spec.
+		if imgInfo.Config != nil && imgInfo.Config.Labels[stacks.ImageSpecLabel] == desiredLabel {
+			return false, nil // up to date
+		}
+		// Spec mismatch — remove the stale image so Docker doesn't reuse it.
+		if progress != nil {
+			progress(fmt.Sprintf("Stack image %s is outdated, rebuilding...", imageName))
+		}
+		_, _ = m.docker.ImageRemove(ctx, imageName, dockerimage.RemoveOptions{Force: true})
 	}
 
 	if progress != nil {
@@ -541,17 +627,19 @@ func (m *Manager) ensureStackImage(ctx context.Context, stackName, imageName str
 
 	buildCtxDir, err := stacks.ExtractBuildContext(stackName)
 	if err != nil {
-		return fmt.Errorf("extract build context: %w", err)
+		return false, fmt.Errorf("extract build context: %w", err)
 	}
 	defer os.RemoveAll(buildCtxDir)
 
 	tarBuf, err := dirToTar(buildCtxDir)
 	if err != nil {
-		return fmt.Errorf("create build tar: %w", err)
+		return false, fmt.Errorf("create build tar: %w", err)
 	}
 
-	ver := version.Version
-	labels := map[string]string{stacks.VersionLabel: ver}
+	labels := map[string]string{
+		stacks.VersionLabel:   version.Version,
+		stacks.ImageSpecLabel: desiredLabel,
+	}
 	buildArgs := stacks.BuildArgs()
 
 	resp, err := m.docker.ImageBuild(ctx, tarBuf, types.ImageBuildOptions{
@@ -562,11 +650,13 @@ func (m *Manager) ensureStackImage(ctx context.Context, stackName, imageName str
 		Remove:     true,
 	})
 	if err != nil {
-		return fmt.Errorf("build image: %w", err)
+		return false, fmt.Errorf("build image: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	return nil
+	if err := streamBuildOutput(resp.Body, progress); err != nil {
+		return false, fmt.Errorf("build image: %w", err)
+	}
+	return true, nil
 }
 
 func (m *Manager) createContainer(ctx context.Context, s *registry.Session, volumeName string) error {
@@ -689,6 +779,7 @@ func (m *Manager) startAgent(ctx context.Context, s *registry.Session) error {
 	execResp, err := m.docker.ContainerExecCreate(ctx, s.ContainerName, container.ExecOptions{
 		Cmd:          cmd,
 		User:         fmt.Sprintf("%d:%d", s.HostUID, s.HostGID),
+		WorkingDir:   s.Repo,
 		AttachStdout: false,
 		AttachStderr: false,
 	})
@@ -811,7 +902,6 @@ func buildEnv(s *registry.Session, shortID string) []string {
 		"HOME=/agent/home",
 		"XDG_CONFIG_HOME=/agent/home/.config",
 		fmt.Sprintf("XDG_DATA_HOME=%s", filepath.Dir(s.OpenCodeDataDir)),
-		"PATH=/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"NPM_CONFIG_PREFIX=/agent",
 		fmt.Sprintf("OPENCODE_CONFIG_DIR=%s", s.OpenCodeConfigDir),
 		// OPENCODE_CONFIG_CONTENT has the highest precedence of all opencode
@@ -871,6 +961,34 @@ func buildPorts(ports []registry.PortMapping) (map[nat.Port][]nat.PortBinding, m
 		})
 	}
 	return bindings, exposed
+}
+
+// streamBuildOutput reads the Docker image build response body (newline-delimited
+// JSON) and forwards each step line to the progress callback. Returns an error
+// if the build itself reported a failure in the stream.
+func streamBuildOutput(r io.Reader, progress ProgressFn) error {
+	type buildMsg struct {
+		Stream string `json:"stream"`
+		Error  string `json:"error"`
+	}
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		var msg buildMsg
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue // skip unparseable lines
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("%s", msg.Error)
+		}
+		if progress != nil && msg.Stream != "" {
+			// Trim trailing newline — the caller's progress renderer adds one.
+			line := strings.TrimRight(msg.Stream, "\n")
+			if line != "" {
+				progress(line)
+			}
+		}
+	}
+	return scanner.Err()
 }
 
 func streamOutput(r io.Reader, buf *logbuffer.Buffer) {

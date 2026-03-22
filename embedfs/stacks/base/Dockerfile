@@ -55,6 +55,17 @@ ENV XDG_CONFIG_HOME=/agent/home/.config
 ENV PATH=/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV NPM_CONFIG_PREFIX=/agent
 
+# Ensure the construct PATH survives login shells (which source /etc/profile
+# and reset PATH to a Debian default).
+RUN echo 'export PATH="/agent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+    > /etc/profile.d/construct-path.sh
+
+# Ensure the construct PATH survives login shells (which source /etc/profile
+# and reset PATH to a Debian default). Any stack-specific paths prepended via
+# ENV PATH in a child Dockerfile are picked up via the $PATH expansion here
+# because this RUN executes after those ENV instructions are applied.
+RUN echo 'export PATH="'"$PATH"'"' > /etc/profile.d/construct-path.sh
+
 # Label
 LABEL io.construct.stack=base
 

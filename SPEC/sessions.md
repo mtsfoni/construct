@@ -109,7 +109,12 @@ per folder, R-SES-3).
        the new UID/GID: it removes the existing container (`docker rm`), then
        creates a fresh one with the updated `User` field before starting the
        agent. The agent layer volume is preserved across this recreation.
-   b. If `status: running`: return connection info (pure attach; no changes).
+    b. If `status: running`: probe the container via `docker inspect`. If the
+       container is present and running, return connection info (pure attach;
+       no changes). If the container is gone or not running (e.g. manually
+       deleted or crashed), update `status: stopped` in the registry, emit a
+       progress message, and fall through to the stopped-session restart path
+       (step 3a above).
  4. **Existing session, different tool/stack/docker/ports/debug:**
     - The daemon returns the existing session record and connection info with a
       `settings_conflict: true` flag in the response. It does **not** ignore the

@@ -48,7 +48,7 @@ func newTestServer(t *testing.T) (*server.Server, string, *session.Manager, *aut
 	mgr := session.NewManager(nil, reg, authStore, qsStore, dir)
 
 	sockPath := filepath.Join(dir, "test.sock")
-	srv := server.New(sockPath, mgr, authStore)
+	srv := server.New(sockPath, mgr, authStore, qsStore)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("server start: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestSessionLogs_WithBuffer(t *testing.T) {
 	}
 
 	sockPath := filepath.Join(dir, "test.sock")
-	srv := server.New(sockPath, mgr, authStore)
+	srv := server.New(sockPath, mgr, authStore, qsStore)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestSessionLogs_BufferedLines(t *testing.T) {
 	mgr.InjectLogBuffer(sess.ID, buf)
 
 	sockPath := filepath.Join(dir, "test2.sock")
-	srv := server.New(sockPath, mgr, authStore)
+	srv := server.New(sockPath, mgr, authStore, qsStore)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start server: %v", err)
 	}

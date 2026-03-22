@@ -158,6 +158,16 @@ func buildDaemonImage(ctx context.Context, opts Options) error {
 		"./cmd/constructd/",
 	)
 	buildCmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+	// Run go build from the construct source tree, not from the caller's cwd.
+	// SourceDir is stamped at build time by install.sh; fall back to the
+	// executable's directory if it wasn't set (e.g. during development).
+	if version.SourceDir != "" {
+		buildCmd.Dir = version.SourceDir
+	} else {
+		if exe, err := os.Executable(); err == nil {
+			buildCmd.Dir = filepath.Dir(exe)
+		}
+	}
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("compile constructd: %w\n%s", err, out)
 	}
@@ -185,21 +195,20 @@ func runDaemonContainer(ctx context.Context, opts Options) error {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
-	// The daemon container needs to write daemon.sock into /state (owned by the
-	// host user) and access /var/run/docker.sock (owned by root:docker).
-	// We run as root inside the container (UID 0) which can write anywhere,
-	// but the docker socket GID must be added so docker CLI calls work.
 	dockerGID, err := dockerSocketGID()
 	if err != nil {
 		return fmt.Errorf("get docker socket GID: %w", err)
 	}
+
+	uid := os.Getuid()
+	gid := os.Getgid()
 
 	args := []string{
 		"run", "-d",
 		"--name", daemonContainerName,
 		"--restart", "unless-stopped",
 		"--network", "host",
-		"--user", "root",
+		"--user", fmt.Sprintf("%d:%d", uid, gid),
 		"--group-add", dockerGID,
 		"--security-opt", "label=disable",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",

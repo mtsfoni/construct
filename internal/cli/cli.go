@@ -3,6 +3,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 
 	"github.com/construct-run/construct/internal/client"
 	"github.com/construct-run/construct/internal/config"
-	"github.com/construct-run/construct/internal/quickstart"
 )
 
 // CLI is the top-level CLI state.
@@ -181,52 +181,31 @@ func (c *CLI) Run(ctx context.Context, flags RunFlags, w io.Writer, errW io.Writ
 
 // Attach connects to an existing session.
 func (c *CLI) Attach(ctx context.Context, sessionIDOrFolder string, w io.Writer, errW io.Writer) error {
-	folder, id, err := c.resolveArg(ctx, sessionIDOrFolder)
+	id, repo, err := c.resolveToIDAndRepo(ctx, sessionIDOrFolder)
 	if err != nil {
-		return err
+		return fmt.Errorf("no session found for %s. Use 'construct run' to start one", sessionIDOrFolder)
 	}
 
-	if folder == "" && id != "" {
-		// Look up the folder from the ID via session.list.
+	// If we resolved via ID prefix (no repo), look up the folder from the full session record.
+	if repo == "" && id != "" {
 		sessions, err := c.listSessions(ctx)
 		if err != nil {
 			return err
 		}
 		for _, s := range sessions {
-			if strings.HasPrefix(s.ID, id) {
-				folder = s.Repo
-				id = s.ID
+			if s.ID == id {
+				repo = s.Repo
 				break
 			}
 		}
-		if folder == "" {
+		if repo == "" {
 			return fmt.Errorf("no session found for id %s. Use 'construct run' to start one", id)
 		}
 	}
 
-	if folder == "" {
-		return fmt.Errorf("no session found for %s. Use 'construct run' to start one", sessionIDOrFolder)
-	}
-
-	// Verify session exists.
-	sessions, err := c.listSessions(ctx)
-	if err != nil {
-		return err
-	}
-	found := false
-	for _, s := range sessions {
-		if s.Repo == folder || s.ID == id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("no session found for %s. Use 'construct run' to start one", sessionIDOrFolder)
-	}
-
 	// Send session.start which will attach to existing or restart stopped session.
 	flags := RunFlags{
-		Folder:            folder,
+		Folder:            repo,
 		HostUID:           os.Getuid(),
 		HostGID:           os.Getgid(),
 		OpenCodeConfigDir: config.OpenCodeConfigDir(),
@@ -250,22 +229,35 @@ func (c *CLI) Quickstart(ctx context.Context, folder string, w io.Writer, errW i
 		return fmt.Errorf("resolve folder: %w", err)
 	}
 
-	stateDir := config.ConstructConfigDir()
-	qsStore := quickstart.NewStore(stateDir)
-	rec, err := qsStore.Load(canonical)
+	responses, err := c.client.Do(ctx, "quickstart.get", map[string]interface{}{
+		"folder": canonical,
+	})
 	if err != nil {
-		if err == quickstart.ErrNoRecord {
-			return fmt.Errorf("no quickstart record for %s. Run 'construct' first to create one", canonical)
-		}
-		return fmt.Errorf("load quickstart record: %w", err)
+		return fmt.Errorf("quickstart.get: %w", err)
+	}
+	if len(responses) == 0 {
+		return fmt.Errorf("no response from daemon")
+	}
+	var result struct {
+		Found      bool     `json:"found"`
+		Tool       string   `json:"tool"`
+		Stack      string   `json:"stack"`
+		DockerMode string   `json:"docker_mode"`
+		Ports      []string `json:"ports"`
+	}
+	if err := json.Unmarshal(responses[0].Payload, &result); err != nil {
+		return fmt.Errorf("decode quickstart response: %w", err)
+	}
+	if !result.Found {
+		return fmt.Errorf("no quickstart record for %s. Run 'construct run' first to create one", canonical)
 	}
 
 	flags := RunFlags{
 		Folder:            canonical,
-		Tool:              rec.Tool,
-		Stack:             rec.Stack,
-		DockerMode:        rec.DockerMode,
-		Ports:             rec.Ports,
+		Tool:              result.Tool,
+		Stack:             result.Stack,
+		DockerMode:        result.DockerMode,
+		Ports:             result.Ports,
 		Web:               true,
 		HostUID:           os.Getuid(),
 		HostGID:           os.Getgid(),
@@ -292,7 +284,8 @@ func (c *CLI) Ls(ctx context.Context, jsonOutput bool, w io.Writer) error {
 	}
 
 	isTTY := isTerminal(w)
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	var buf bytes.Buffer
+	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tREPO\tTOOL\tSTACK\tDOCKER\tSTATUS\tPORTS\tURL\tAGE")
 
 	for _, s := range sessions {
@@ -308,21 +301,19 @@ func (c *CLI) Ls(ctx context.Context, jsonOutput bool, w io.Writer) error {
 		}
 
 		age := formatAge(s.CreatedAt)
-		statusStr := s.Status
-		if isTTY {
-			switch s.Status {
-			case "running":
-				statusStr = "\033[32mrunning\033[0m"
-			case "stopped":
-				statusStr = "\033[33mstopped\033[0m"
-			}
-		}
 
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			shortID, s.Repo, s.Tool, s.Stack, s.DockerMode,
-			statusStr, ports, url, age)
+			s.Status, ports, url, age)
 	}
 	tw.Flush()
+
+	out := buf.String()
+	if isTTY {
+		out = strings.ReplaceAll(out, " running ", " \033[32mrunning\033[0m ")
+		out = strings.ReplaceAll(out, " stopped ", " \033[33mstopped\033[0m ")
+	}
+	fmt.Fprint(w, out)
 	return nil
 }
 
@@ -708,7 +699,7 @@ func canonicalPath(p string) (string, error) {
 }
 
 func isHexPrefix(s string) bool {
-	if len(s) < 8 {
+	if len(s) < 1 {
 		return false
 	}
 	for _, c := range s {
@@ -724,7 +715,7 @@ func formatPorts(ports []portMapping) string {
 	for _, p := range ports {
 		parts = append(parts, fmt.Sprintf("%d:%d", p.HostPort, p.ContainerPort))
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, ",")
 }
 
 func formatAge(t time.Time) string {

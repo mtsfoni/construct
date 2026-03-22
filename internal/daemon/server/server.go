@@ -14,6 +14,7 @@ import (
 
 	"github.com/construct-run/construct/internal/auth"
 	"github.com/construct-run/construct/internal/daemon/session"
+	"github.com/construct-run/construct/internal/quickstart"
 )
 
 // Server listens on a Unix socket and handles requests.
@@ -21,15 +22,17 @@ type Server struct {
 	socketPath string
 	mgr        *session.Manager
 	authStore  *auth.Store
+	qsStore    *quickstart.Store
 	listener   net.Listener
 }
 
 // New creates a new Server.
-func New(socketPath string, mgr *session.Manager, authStore *auth.Store) *Server {
+func New(socketPath string, mgr *session.Manager, authStore *auth.Store, qsStore *quickstart.Store) *Server {
 	return &Server{
 		socketPath: socketPath,
 		mgr:        mgr,
 		authStore:  authStore,
+		qsStore:    qsStore,
 	}
 }
 
@@ -188,6 +191,8 @@ func (s *Server) dispatch(ctx context.Context, w *connWriter, req Request) {
 		s.handleCredUnset(ctx, w, req.Params)
 	case "config.cred.list":
 		s.handleCredList(ctx, w, req.Params)
+	case "quickstart.get":
+		s.handleQuickstartGet(ctx, w, req.Params)
 	default:
 		w.sendError(fmt.Sprintf("unknown command: %s", req.Command)) //nolint:errcheck
 	}
@@ -503,6 +508,52 @@ func (s *Server) handleCredList(ctx context.Context, w *connWriter, raw json.Raw
 	}
 
 	w.sendEnd(credListResult{Credentials: items}) //nolint:errcheck
+}
+
+// --- quickstart.get ---
+
+type quickstartGetParams struct {
+	Folder string `json:"folder"`
+}
+
+type quickstartGetResult struct {
+	Found      bool     `json:"found"`
+	Folder     string   `json:"folder,omitempty"`
+	Tool       string   `json:"tool,omitempty"`
+	Stack      string   `json:"stack,omitempty"`
+	DockerMode string   `json:"docker_mode,omitempty"`
+	Ports      []string `json:"ports,omitempty"`
+}
+
+func (s *Server) handleQuickstartGet(ctx context.Context, w *connWriter, raw json.RawMessage) {
+	var p quickstartGetParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		w.sendError(fmt.Sprintf("invalid params: %v", err)) //nolint:errcheck
+		return
+	}
+	if p.Folder == "" {
+		w.sendError("folder is required") //nolint:errcheck
+		return
+	}
+
+	rec, err := s.qsStore.Load(p.Folder)
+	if err == quickstart.ErrNoRecord {
+		w.sendEnd(quickstartGetResult{Found: false}) //nolint:errcheck
+		return
+	}
+	if err != nil {
+		w.sendError(fmt.Sprintf("load quickstart: %v", err)) //nolint:errcheck
+		return
+	}
+
+	w.sendEnd(quickstartGetResult{ //nolint:errcheck
+		Found:      true,
+		Folder:     rec.Folder,
+		Tool:       rec.Tool,
+		Stack:      rec.Stack,
+		DockerMode: rec.DockerMode,
+		Ports:      rec.Ports,
+	})
 }
 
 // --- helpers ---

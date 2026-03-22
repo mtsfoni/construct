@@ -524,7 +524,7 @@ func TestIntegration_DaemonSocket(t *testing.T) {
 	qsStore := quickstart.NewStore(filepath.Join(stateDir, "quickstart"))
 	mgr := session.NewManager(cli, reg, authStore, qsStore, stateDir)
 
-	srv := server.New(socketPath, mgr, authStore)
+	srv := server.New(socketPath, mgr, authStore, qsStore)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("server start: %v", err)
 	}
