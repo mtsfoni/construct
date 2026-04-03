@@ -3,6 +3,7 @@
 
 > **Linux only.** macOS and Windows are not currently supported.
 
+> **Project Notice:** I am currently working on a newer, better isolated version of this tool. This repository will be archived soon in favor of the new version.
 Run AI coding agents (opencode) in isolated Docker containers. The agent gets its own environment — its own filesystem, its own tool installs, its own home directory — without touching your machine. Your repo is bind-mounted at its exact host path so paths, git worktrees, and relative references all work correctly.
 
 ## How it works
