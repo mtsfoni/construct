@@ -22,6 +22,7 @@ Each session container:
 
 - Docker (running on the host)
 - Go 1.22+ (to build from source)
+- Git (for version control)
 
 ## Installation
 
